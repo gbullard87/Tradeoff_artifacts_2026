@@ -1,0 +1,3190 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+Separating biological signal from statistical artifact in trait trade-off inference
+G. Bullard and D. Jackson
+Full code
+
+Run one section at a time (sections denoted by ~~~~~~~~), clearing your environment for each one.
+
+Figure 1, Figure 2, Figure S1
+```{r}
+rm(list = ls())
+#P1: Wide temp range, identifiable slope
+#P2: Narrow temp window highlighted; many equally plausible lines
+#P3: Ridge in (a,B) from narrow-window bootstrap fits
+#P4: Same ridge mapped to (z, sCTmax)
+
+library(tidyverse)
+library(patchwork)
+library(grid)
+library(cowplot)
+library(ggbrace)
+library(smatr)
+
+set.seed(2)
+
+# helper transforms
+ab_to_zs <- function(a, B) {
+  # from y = a + B*T to y = (sCTmax - T)/z
+  # B = -1/z, a = sCTmax/z
+  z <- -1 / B
+  sCTmax <- -a / B
+  list(z = z, sCTmax = sCTmax)
+}
+
+# simulate one underlying "true" TDT line + noise
+a_true <- 40       # intercept
+B_true <- -1       # slope
+sigma_y <- 1    # vertical noise SD for log10(tf)
+
+n_total <- 450
+
+T_full <- runif(n_total, 29, 42)
+y_full <- a_true + B_true * T_full + rnorm(n_total, 0, sigma_y)
+
+dat_full <- tibble(Temp = T_full, log_tf = y_full)
+
+# highlight region for narrow temp range
+t_lo <- 37
+t_hi <- 40
+dat_full <- dat_full %>%
+  mutate(in_window = Temp >= t_lo & Temp <= t_hi)
+
+dat_window <- dat_full %>% filter(in_window)
+
+# candidate lines that "fit similarly" in the window:
+
+# bootstrap fits from the narrow window
+B_lines <- 60
+
+boot_fits <- map_dfr(1:B_lines, function(i) {
+  idx <- sample(seq_len(nrow(dat_window)), replace = TRUE)
+  fit <- lm(log_tf ~ Temp, data = dat_window[idx, ])
+  tibble(
+    a = coef(fit)[1],
+    B = coef(fit)[2])
+})
+
+# transform to z / sCTmax
+boot_fits <- boot_fits %>%
+  mutate(
+    z = -1 / B,
+    sCTmax = -a / B
+  ) %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+# also compute the "true" z, sCTmax for reference
+zs_true <- ab_to_zs(a_true, B_true)
+z_true <- zs_true$z
+s_true <- zs_true$sCTmax
+
+
+# Panel 1: wide range (single best fit)
+fit_full <- lm(log_tf ~ Temp, data = dat_full)
+
+p1 <- ggplot(dat_full, aes(Temp, log_tf)) +
+  geom_point(size = 1.7, alpha = 0.85) +
+  geom_abline(intercept = coef(fit_full)[1], slope = coef(fit_full)[2], linewidth = 1.3,color="darkorange") +
+  labs(
+    title = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())
+
+# Panel 2: narrow window highlighted + many plausible lines
+# Build lines for plotting in panel 2
+t_grid <- seq(min(dat_full$Temp), max(dat_full$Temp), length.out = 100)
+
+lines_df <- boot_fits[1:min(60, nrow(boot_fits)), ] %>%
+  mutate(draw = row_number()) %>%
+  tidyr::expand_grid(Temp = t_grid) %>%
+  mutate(log_tf = a + B * Temp)
+
+p2 <- ggplot(dat_full, aes(Temp, log_tf)) +
+  geom_point(data = dat_full %>% filter(!in_window), color = "grey70", size = 1.5, alpha = 0.6) +
+  geom_point(data = dat_full %>% filter(in_window),  size = 1.8, alpha = 0.9) +
+  annotate("rect", xmin = t_lo, xmax = t_hi, ymin = -Inf, ymax = Inf,
+           alpha = 0.08, fill = "grey10") +
+  geom_line(data = lines_df, aes(Temp, log_tf, group = draw),
+            alpha = 0.18, linewidth = 0.7,color="pink") +
+  geom_smooth(data = dat_full, method="lm",
+            alpha = 0.18, linewidth = 1.3,color="hotpink",fullrange=TRUE,se=FALSE) +
+  labs(
+    title = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())+
+  ylab("")
+
+# Panel 3: ridge in (a, B)
+p3 <- ggplot(boot_fits, aes(a, B)) +
+  geom_point(
+    size = 2,
+    alpha = 0.75,
+    position = position_jitter(width = 0.02, height = 0.02)
+  ) +
+  geom_point(aes(x = a_true, y = B_true), shape = 4, stroke = 1.2, size = 4, color="hotpink") +
+  labs(
+    title = "",
+    x = "y-Intercept (\U03B1)",
+    y = "Slope (\u03B2)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank()) +
+  xlab("") 
+
+#this one is x-intercepts
+
+# Panel 4: mapped ridge in (z, sCTmax)
+p4 <- ggplot(boot_fits, aes(sCTmax, z)) +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_point(aes(x = s_true, y = z_true), shape = 4, stroke = 1.2, size = 4, color="hotpink") +
+  labs(title = "", x = expression(sCT[max]),y = "Thermal Senstitivity (z)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())+
+  xlab("")+
+  stat_ellipse(color = "grey70", linewidth = 0.8)
+
+
+
+```
+
+```{r}
+p1.f0 = p1+
+  ylab("Response")+
+  xlab("Predictor")+
+  theme(axis.text=element_blank())
+p2.f0 = p2 +
+  ylab("Response")+
+  xlab("Predictor")+
+  theme(axis.text=element_blank())
+p3.f0 = ggplot(boot_fits, aes(a, B)) +
+  geom_point(size = 2,alpha = 0.75,position = position_jitter(width = 0.02, height = 0.02))+
+  geom_point(aes(x = a_true, y = B_true), shape = 4, stroke = 1.2, size = 4, color="hotpink")+
+  labs(title= "",x="y-Intercept (\U03B1)",y="Slope (\u03B2)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(),axis.text=element_blank())+
+  labs(tag="C")
+
+#x-intercept
+x.int.true = -a_true/B_true
+
+p4.f0 = ggplot(boot_fits, aes(sCTmax, B)) +
+  geom_point(size = 2,alpha = 0.75,position = position_jitter(width = 0.02, height = 0.02))+
+  geom_point(aes(x = x.int.true, y = B_true), shape = 4, stroke = 1.2, size = 4, color="hotpink")+
+  labs(title= "",x="x-Intercept",y="Slope (\u03B2)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(),axis.text=element_blank())+
+  labs(tag="D")
+
+# Figure 1
+set.seed(12)
+ggdraw() +
+  draw_plot((p1.f0 | p2.f0) / (p3.f0 | p4.f0)) +
+  draw_label("Restricted sampling + sampling error = spurious correlation",               
+             x = 0.48, y = 0.92,   
+             fontface = "italic", size = 12) +
+  draw_label("True Parameter", 
+             x = 0.65, y = 0.34, 
+             fontface = "italic", size = 12, color = "hotpink") +
+    draw_label("True Parameter", 
+             x = 0.28, y = 0.34, 
+             fontface = "italic", size = 12, color = "hotpink") +
+  draw_label("Observed Temperature Range", 
+             x = 0.83, y = 0.86, 
+             fontface = "italic", size = 9, color = "gray40")
+```
+
+```{r}
+# Bottom row: hierarchical case (multiple lines)
+
+# simulate multiple true lines (same slope, different intercepts)
+set.seed(3)
+line_colors <- c("#7B3294", "#E69F00", "#0072B2", "#009E73")
+light_line_colors <- colorspace::lighten(line_colors, 0.5)
+n_lines <- length(line_colors)
+
+a_lines <- a_true + c(-4, -1.5, 1.5, 4)  # spread intercepts for clarity
+B_lines_true <- rep(B_true, n_lines)
+
+n_per_line <- 35
+
+multi_dat <- map_dfr(1:n_lines, function(i) {
+
+  Temp <- runif(n_per_line, 29, 41)
+  log_tf <- a_lines[i] + B_lines_true[i] * Temp + rnorm(n_per_line, 0, sigma_y)
+
+  tibble(
+    Temp = Temp,
+    log_tf = log_tf,
+    line = paste0("L", i))})
+
+multi_dat <- multi_dat %>%
+  mutate(in_window = Temp >= t_lo & Temp <= t_hi)
+
+# Panel 5: multiple true lines (full range)
+p5 <- ggplot(multi_dat, aes(Temp, log_tf, color = line)) +
+  geom_point(size = 1.7, alpha = 0.85) +
+  geom_abline(
+    data = tibble(a = a_lines, B = B_lines_true, line = paste0("L",1:n_lines)),
+    aes(intercept = a, slope = B, color = line),
+    linewidth = 1.2,
+    show.legend = FALSE) +
+  scale_color_manual(values = line_colors) +
+  labs(
+    title = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-5,18)
+
+
+# bootstrap fits per line using restricted window
+boot_multi <- map_dfr(unique(multi_dat$line), function(L) {
+
+  dat_line <- multi_dat %>% filter(line == L, in_window)
+
+  map_dfr(1:25, function(i) {
+
+    idx <- sample(seq_len(nrow(dat_line)), replace = TRUE)
+    fit <- lm(log_tf ~ Temp, data = dat_line[idx, ])
+
+    tibble(
+      line = L,
+      a = coef(fit)[1],
+      B = coef(fit)[2])})})
+
+boot_multi <- boot_multi %>%
+  mutate(
+    z = -1 / B,
+    sCTmax = -a / B
+  ) %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+# candidate lines for P6
+t_grid <- seq(29, 41, length.out = 100)
+
+line_df <- boot_multi %>%
+  group_by(line) %>%
+  slice_head(n = 10) %>%
+  ungroup() %>%
+  mutate(draw = row_number()) %>%
+  expand_grid(Temp = t_grid) %>%
+  mutate(log_tf = a + B * Temp)
+
+# best-fit lines per line
+best_fits <- multi_dat %>%
+  filter(in_window) %>%
+  group_by(line) %>%
+  do({
+    fit <- lm(log_tf ~ Temp, data = .)
+    tibble(a = coef(fit)[1], B = coef(fit)[2])
+  })
+
+
+# Panel 6: restricted window + candidate fits
+p6 <- ggplot(multi_dat, aes(Temp, log_tf)) +
+  geom_point(data = multi_dat %>% filter(!in_window),
+             color = "grey70", size = 1.3, alpha = 0.6) +
+  geom_point(data = multi_dat %>% filter(in_window),aes(color = line), size = 1.8, alpha = 1.1) +
+  geom_point(data = multi_dat %>% filter(!in_window),aes(color = line), size = 1.8, alpha = 0.25) +
+  annotate("rect", xmin = t_lo, xmax = t_hi, ymin = -Inf, ymax = Inf,
+           alpha = 0.08, fill = "grey10") +
+  geom_line(
+    data = line_df,
+    aes(Temp, log_tf, group = interaction(line, draw), color = line),
+    alpha = 0.15,
+    linewidth = 0.7
+  ) +
+  geom_abline(
+    data = best_fits,
+    aes(intercept = a, slope = B, color = line),
+    linewidth = 1.1
+  ) +
+  scale_color_manual(values = line_colors) +
+  labs(
+    title = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-5,18)+
+  ylab("")
+
+
+# Panel 7: (a,B) ridge across lines
+p7 <- ggplot(boot_multi, aes(a, B, color = line)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = line_colors) +
+  labs(
+    title = "",
+    x = "Intercept (\u03B1)",
+    y = "Slope (\u03B2)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-3,0)+xlim(0,105)
+
+# Panel 8: transformed tradeoff
+p8 <- ggplot(boot_multi, aes(sCTmax, z, color = line)) +
+  geom_point(size = 2, alpha = 0.8) +
+  stat_ellipse(color = "grey70", linewidth = 0.8) +
+  scale_color_manual(values = line_colors) +
+  labs(
+    title = "",
+    x = expression(sCT[max]),
+    y = "Thermal Sensitivity (z)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(0.25,1.5)+xlim(35,48)
+
+# Combine with original panels
+
+p1 <- p1 + labs(tag = "A")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p2 <- p2 + labs(tag = "B")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p3 <- p3 + labs(tag = "C")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p4 <- p4 + labs(tag = "D")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p5 <- p5 + labs(tag = "E")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p6 <- p6 + labs(tag = "F")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p7 <- p7 + labs(tag = "G")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+p8 <- p8 + labs(tag = "H")+theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+
+arrow_plot <- ggplot() +
+  geom_segment(
+    aes(x = 0, y = 0.5, xend = 1, yend = 0.5),
+    arrow = arrow(length = unit(0.15, "inches")),
+    linewidth = 1.2) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+arrow_plot_vertical <- ggplot() +
+  geom_segment(
+    aes(x = 0.5, y = 0, xend = 0.5, yend = 1),
+    arrow = arrow(
+      length = unit(0.15, "inches"),
+      ends = "both",
+      type = "open"),
+    linewidth = 1.2) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+
+row_label1 <- ggplot() +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.5,
+    label = "Single Line",
+    angle = 90,
+    size = 6,
+    fontface = "bold"
+  ) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1), expand = FALSE) +
+  theme(plot.margin = margin(0,0,0,0))
+
+row_label2 <- ggplot() +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.5,
+    label = "Multiple Lines",
+    angle = 90,
+    size = 6,
+    fontface = "bold"
+  ) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1), expand = FALSE) +
+  theme(plot.margin = margin(0,0,0,0))
+
+label_row <- ggplot() +
+  annotate("text", x = 0.28, y = 0.5, label = "Data Space",
+           size = 5, fontface = "bold") +
+  annotate("text", x = 0.78, y = 0.5, label = "Parameter Space",
+           size = 5, fontface = "bold") +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+
+brace_row <- ggplot() +
+  stat_brace(aes(x = c(0.05, 0.52), y = 0),
+             rotate = 0, width = 0.2, outerstart = 0.3) +
+  stat_brace(aes(x = c(0.56, 1.02), y = 0),
+             rotate = 0, width = 0.2, outerstart = 0.3) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+
+# Stack: label / brace / plots
+top_row    <-  label_row
+brace_row_ <- plot_spacer() | brace_row
+
+row_single <- row_label1 | (p1 | p2 | p3 | p4)
+row_single <- row_single + plot_layout(widths = c(0.08, 1))
+
+row_multi  <- row_label2 | (p5 | p6 | p7 | p8)
+row_multi  <- row_multi  + plot_layout(widths = c(0.08, 1))
+
+# Stack rows, control heights only at top level
+fig_full <- (top_row / brace_row  / row_single / row_multi) +
+  plot_layout(heights = c(0.12, 0.12, 1, 1)) &
+  theme(
+    axis.text  = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+fig_full_final=fig_full +
+  inset_element(arrow_plot, 0.28, 2.9, 0.32, 0.78) +
+  inset_element(arrow_plot, 0.49, 2.9, 0.53, 0.78) +
+  inset_element(arrow_plot, 0.71, 2.9, 0.75, 0.78) +
+  inset_element(arrow_plot, 0.28, 0.6, 0.32, 0.78) +
+  inset_element(arrow_plot, 0.49, 0.6, 0.53, 0.78) +
+  inset_element(arrow_plot, 0.71, 0.6, 0.75, 0.78) +
+  inset_element(arrow_plot_vertical, 0, 1.175, 1.25, 1)+
+  inset_element(arrow_plot_vertical, 0, 1.175, 1.75, 1)
+
+# Figure 2
+ggdraw(fig_full_final) +
+  draw_label("Restricted Sampling",               
+             x = 0.305, y = 0.86,   # adjust y to sit just above the brace
+             fontface = "italic", size = 12) +
+  draw_label("Non-Linear Reparameterization", 
+             x = 0.769, y = 0.855, 
+             fontface = "italic", size = 12)+
+  draw_label("True Parameter", 
+             x = 0.685, y = 0.77, 
+             fontface = "italic", size = 12, color="hotpink")+
+  draw_label("Observed Temperature Range", 
+             x = 0.47, y = 0.86, 
+             fontface = "italic", size = 9, color="gray40")
+
+```
+
+```{r}
+#Figure S1
+#bottom row Figure 2 but with variable slopes
+#simulate multiple generating lines (different slopes, different intercepts)
+
+set.seed(3)
+line_colors = c("#7B3294", "#E69F00", "#0072B2", "#009E73")
+light_line_colors <- colorspace::lighten(line_colors, 0.5)
+n_lines = length(line_colors)
+
+a_lines = a_true + c(-4, -1.5, 1.5, 4)  
+B_lines_true <- B_true + runif(4,-0.3,0.3)
+
+n_per_line <- 35
+
+multi_dat <- map_dfr(1:n_lines, function(i) {
+
+  Temp <- runif(n_per_line, 29, 41)
+  log_tf <- a_lines[i] + B_lines_true[i] * Temp + rnorm(n_per_line, 0, sigma_y)
+
+  tibble(
+    Temp = Temp,
+    log_tf = log_tf,
+    line = paste0("L", i))})
+
+multi_dat <- map_dfr(1:n_lines, function(i) {
+
+  Temp <- runif(n_per_line, 29, 41)
+  log_tf <- a_lines[i] + B_lines_true[i] * Temp + rnorm(n_per_line, 0, sigma_y)
+
+  tibble(
+    Temp = Temp,
+    log_tf = log_tf,
+    line = paste0("L", i))})
+
+multi_dat = multi_dat %>%
+  mutate(in_window = Temp >= t_lo & Temp <= t_hi)
+
+#panel 5 Figure 2
+p5s = ggplot(multi_dat, aes(Temp, log_tf, color = line)) +
+  geom_point(size = 1.7, alpha = 0.85) +
+  geom_abline(
+    data = tibble(a = a_lines, B = B_lines_true, line = paste0("L",1:n_lines)),
+    aes(intercept = a, slope = B, color = line),
+    linewidth = 1.2,
+    show.legend = FALSE) +
+  scale_color_manual(values = line_colors) +
+  labs(
+    title = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-5,18)+
+  labs(tag="A")
+
+# bootstrap fits per line using restricted window
+boot_multi = map_dfr(unique(multi_dat$line), function(L) {
+
+  dat_line = multi_dat %>% filter(line == L, in_window)
+
+  map_dfr(1:25, function(i) {
+
+    idx = sample(seq_len(nrow(dat_line)), replace = TRUE)
+    fit = lm(log_tf ~ Temp, data = dat_line[idx, ])
+
+    tibble(
+      line = L,
+      a = coef(fit)[1],
+      B = coef(fit)[2])})})
+
+boot_multi = boot_multi %>%
+  mutate(z = -1 / B, sCTmax = -a / B) %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+#candidate lines panel 6
+t_grid = seq(29, 41, length.out = 100)
+
+line_df = boot_multi %>%
+  group_by(line) %>%
+  slice_head(n = 10) %>%
+  ungroup() %>%
+  mutate(draw = row_number()) %>%
+  expand_grid(Temp = t_grid) %>%
+  mutate(log_tf = a + B * Temp)
+
+# best-fit lines per group
+
+best_fits <- multi_dat %>%
+  filter(in_window) %>%
+  group_by(line) %>%
+  do({
+    fit <- lm(log_tf ~ Temp, data = .)
+    tibble(a = coef(fit)[1], B = coef(fit)[2])
+  })
+
+#panel 6
+p6s = ggplot(multi_dat, aes(Temp, log_tf)) +
+  geom_point(data = multi_dat %>% filter(!in_window),color = "grey70", size = 1.3, alpha = 0.6) +
+  geom_point(data = multi_dat %>% filter(in_window),aes(color = line), size = 1.8, alpha = 1.1) +
+  geom_point(data = multi_dat %>% filter(!in_window),aes(color = line), size = 1.8, alpha = 0.25) +
+  annotate("rect", xmin = t_lo, xmax = t_hi, ymin = -Inf, ymax = Inf, alpha = 0.08, fill = "grey10") +
+  geom_line(data = line_df, aes(Temp, log_tf, group = interaction(line, draw), color = line), alpha = 0.15, linewidth = 0.7) +
+  geom_abline(data = best_fits, aes(intercept = a, slope = B, color = line), linewidth = 1.1) +
+  scale_color_manual(values = line_colors) +
+  labs(title = "", x = "Temperature (°C)", y = expression(log[10]*"(time to failure)")) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-5,18)+
+  ylab("")+
+  labs(tag="B")
+
+#panel 7
+p7s = ggplot(boot_multi, aes(a, B, color = line)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = line_colors) +
+  labs(title = "", x = "Intercept (\u03b1)", y = "Slope (\u03b2)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(-2.5,0)+xlim(0,105)+
+  labs(tag="C")
+
+#panel 8
+p8s = ggplot(boot_multi, aes(sCTmax, z, color = line)) +
+  geom_point(size = 2, alpha = 0.8) +
+  stat_ellipse(color = "grey70", linewidth = 0.8) +
+  scale_color_manual(values = line_colors) +
+  labs(title = "", x = expression(sCT[max]), y = "Thermal Sensitivity (z)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(), legend.position = "none")+
+  ylim(0.25,1.5)+xlim(37,40)+
+  labs(tag="D")
+#Figure S1
+full.fig  = (p5s | p6s | p7s | p8s)
+full.fig
+```
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Figure 3
+
+```{r}
+rm(list = ls())
+#given that this figure is a qualitative proof of concept, not a quantitative analysis, I've included these scalars to allow you to adjust the variance in the error parameters. The output is extremely sensitive to these parameters, but given the unidentifiability of the model, they are hard to estimate (significant uncertainty in our estimates), so we scale them to show that there IS an uncorrelated distribution that qualitatively resembles the Soto et al data after resampling. Not that we have a way of accurately identifying that distribution, since B is likely skewed, not normal. But these parameters are a place to start. 
+
+#Note the codependence between these parameters. Increasing e too much will result in an error because it will force B to be 0
+
+#These values were obtained via optimization (code below Figure 3)
+B_var_scalar=0.1
+a_var_scalar=0.04375
+e_var_scalar=1.3
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(MASS)
+library(scales)
+library(cowplot)
+
+set.seed(1)
+
+#Settings
+file_path   = "Soto_etal_data/KO_4temp_100DGRP.csv"  # change if needed
+sex_label   = "F"                     # "F" or "M"
+T0          = 38
+temps_sim   = 37:40
+n_per_temp  = 5
+n_show_lines = 10                     # for panel C
+
+# Helper functions
+zs_to_ab = function(z, s) {
+  B = -1 / z
+  a = s / z
+  list(a = a, B = B)
+}
+
+ab_to_zs = function(a, B) {
+  z = -1 / B
+  s = -a / B
+  list(z = z, sCTmax = s)
+}
+
+#generate a dataset similar to Soto et al, but assuming uncorrelated slope and intercept.
+simulate_one_dataset_ab = function(mu_a, mu_B, sigma_a, sigma_B, sigma_e,
+                                    n_lines = 100, temps = 37:40, n_per_temp = 5) {
+
+  # draw "true" parameters 
+  a_true = rnorm(n_lines, mean = mu_a, sd = sigma_a)
+  B_true = rnorm(n_lines, mean = mu_B, sd = sigma_B)
+
+  # build dataset
+  sim_dat = tidyr::expand_grid(
+    line_sim = seq_len(n_lines),
+    Temp = temps,
+    rep = seq_len(n_per_temp)
+  )
+
+  # assign outside mutate to avoid scoping issues
+  sim_dat$a = a_true[sim_dat$line_sim]
+  sim_dat$B = B_true[sim_dat$line_sim]
+
+  # simulate on log scale
+  sim_dat$mu = sim_dat$a + sim_dat$B * sim_dat$Temp
+  sim_dat$y  = rnorm(nrow(sim_dat), mean = sim_dat$mu, sd = sigma_e)
+
+  # average on log scale
+  fits = sim_dat %>%
+    dplyr::group_by(line_sim, Temp) %>%
+    dplyr::summarise(y = mean(y), .groups = "drop") %>%
+    dplyr::group_by(line_sim) %>%
+    dplyr::summarise(
+      a_hat = coef(lm(y ~ Temp))[1],
+      B_hat = coef(lm(y ~ Temp))[2],
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      z_hat = -1 / B_hat,
+      sCTmax_hat = -a_hat / B_hat
+    )
+
+  tibble_true = tibble::tibble(
+    line_sim = seq_len(n_lines),
+    a = a_true,
+    B = B_true
+  )
+
+  list(
+    true_pars = tibble_true,
+    sim_dat = sim_dat,
+    recovered = fits
+  )
+}
+
+#display a few of the lines in TDT space to demonstrate the concept
+pick_points_for_panelC = function(dat, n_per_temp = 5) {
+  dat %>%
+    dplyr::group_by(line_sim, Temp) %>%
+    dplyr::slice_sample(n = n_per_temp, replace = TRUE) %>%
+    dplyr::ungroup()
+}
+
+#density plot for z/sCTmax parameterization
+dens_zs = function(df, title = "", subtitle = "", xlims, ylims) {
+  ggplot(df, aes(x = sCTmax, y = z)) +
+    stat_density_2d(aes(fill = after_stat(level)), geom = "polygon") +
+    scale_fill_viridis_c(trans = "log", guide = "none") +
+    coord_cartesian(xlim = xlims, ylim = ylims) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = expression(sCT[max]),
+      y = "z"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+}
+
+#density plot for a/B parameterization
+dens_ab = function(df, x_col = "a", y_col = "B", title = "", subtitle = "", xlims, ylims) {
+  ggplot(df, aes(x = .data[[x_col]], y = .data[[y_col]])) +
+    stat_density_2d(aes(fill = after_stat(level)), geom = "polygon") +
+    scale_fill_viridis_c(trans = "log", guide = "none") +
+    coord_cartesian(xlim = xlims, ylim = ylims) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = "Intercept (\u03b1)",
+      y = "Slope (\u03b2)"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+}
+
+# Read + Format Soto et al data
+# -------------------------
+soto.dat = read.csv(file_path)
+
+soto.dat$time   = soto.dat$KO / 60
+soto.dat$Temp   = soto.dat$temp
+soto.dat$line   = soto.dat$Geno
+
+# Empirical LSE table
+real.pars.soto = data.frame(
+  z = numeric(),
+  sCTmax = numeric(),
+  a = numeric(),
+  B = numeric(),
+  sex = character(),
+  line = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (geno_i in unique(soto.dat$Geno)) {
+  data_i = soto.dat[soto.dat$Geno == geno_i, ]
+
+  for (sex_j in c("F", "M")) {
+    data_ij = data_i[data_i$sex == sex_j, ]
+    if (nrow(data_ij) == 0) next
+    if (length(unique(data_ij$Temp)) < 2) next
+
+    data_means_ij = data_ij %>%
+      group_by(Temp) %>%
+      summarise(mean_tf = mean(time, na.rm = TRUE), .groups = "drop")
+
+    if (nrow(data_means_ij) < 2) next
+
+    lm_ij = lm(log10(mean_tf) ~ Temp, data = data_means_ij)
+    a_hat = coef(lm_ij)[1]
+    B_hat = coef(lm_ij)[2]
+
+    real.pars.soto = rbind(
+      real.pars.soto,
+      data.frame(
+        z = -1 / B_hat,
+        sCTmax = -a_hat / B_hat,
+        a = a_hat,
+        B = B_hat,
+        sex = sex_j,
+        line = geno_i,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+rownames(real.pars.soto) = NULL
+
+# restrict to one sex
+dat_sex = soto.dat %>% filter(sex == sex_label)
+pars_sex = real.pars.soto %>%
+  filter(sex == sex_label) %>%
+  filter(is.finite(z), is.finite(sCTmax), is.finite(a), is.finite(B))
+
+# Null calibration 
+# middle variance setting in a,B
+a_obs = real.pars.soto$a[real.pars.soto$sex==sex_label]
+B_obs = real.pars.soto$B[real.pars.soto$sex==sex_label]
+
+# Full multi-step parameter estimation
+temps = sort(unique(dat_sex$Temp))
+T_bar = mean(temps)
+SS_Temp = sum((temps - T_bar)^2)
+n_temps = length(temps)
+
+# estimate sigma_e^2 using means per temp 
+estimate_sigma_e2_full = function(dat_sex, n_per_temp) {
+  fits = dat_sex %>%
+    group_by(line, Temp) %>%
+    summarise(y = mean(log10(time)), .groups = "drop") %>%
+    group_by(line) %>%
+    group_modify(~{
+      if (nrow(.x) < 2) return(NULL)
+      fit = lm(y ~ Temp, data = .x)
+      tibble(sigma2 = summary(fit)$sigma^2)
+    })
+  
+  median(fits$sigma2, na.rm = TRUE) * n_per_temp
+}
+
+sigma_e2 = estimate_sigma_e2_full(dat_sex, n_per_temp)
+
+# slope variance
+var_B_obs = var(B_obs, na.rm = TRUE)
+sigma_B2 = var_B_obs - sigma_e2 / (n_per_temp * SS_Temp)
+sigma_B2 = sigma_B2*B_var_scalar
+sigma_B2 = max(sigma_B2, 0)
+
+# intercept variance
+var_a_obs = var(a_obs, na.rm = TRUE)
+
+inflation_a = sigma_e2 * (
+  1 / (n_per_temp * n_temps) +
+  (T_bar^2) / (n_per_temp * SS_Temp)
+)
+
+sigma_a2 = var_a_obs - inflation_a
+# scale a
+sigma_a2 = max(sigma_a2, 0)* a_var_scalar
+
+sigma_e2 = sigma_e2*e_var_scalar
+
+# covariance
+cov_obs = cov(a_obs, B_obs, use = "complete.obs")
+cov_aB_true = cov_obs + sigma_e2 * T_bar / (n_per_temp * SS_Temp)
+
+# final parameters
+sigma_a = sqrt(sigma_a2)
+sigma_B = sqrt(sigma_B2)
+sigma_e = sqrt(sigma_e2)
+
+# null generating distribution (pA)
+mu_a = mean(a_obs, na.rm = TRUE)
+mu_B = mean(B_obs, na.rm = TRUE)
+
+#null distribution for pA
+null_ab = MASS::mvrnorm(
+  n = 8000,
+  mu = c(mu_a, mu_B),
+  Sigma = matrix(
+    c(sigma_a2, 0,
+      0, sigma_B2),
+    2, 2
+  )
+) %>%
+  as.data.frame()
+colnames(null_ab) = c("a", "B")
+sigma_e = sqrt(sigma_e2)
+n_lines_this = nrow(pars_sex)
+
+
+# Simulate one dataset under null in a,B
+sim_out = simulate_one_dataset_ab(
+  mu_a = mu_a,
+  mu_B = mu_B,
+  sigma_a = sigma_a,
+  sigma_B = sigma_B,
+  sigma_e = sigma_e,
+  n_lines = n_lines_this,
+  temps = temps_sim,
+  n_per_temp = n_per_temp
+)
+
+true_ab_sim = sim_out$true_pars
+sim_dat = sim_out$sim_dat
+recovered_sim = sim_out$recovered
+
+# pF/G: Empirical z,sCTmax
+emp_zs = pars_sex %>%
+  dplyr::select(z, sCTmax) %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+#pC: simulated TDT curves
+#5 points per line per temp
+#demonstrates the sampling process 
+
+n_show_lines = min(n_show_lines, n_lines_this)
+show_lines = sample(true_ab_sim$line_sim, n_show_lines)
+
+sim_dat_show = sim_dat %>%
+  filter(line_sim %in% show_lines)
+
+sim_dat_show5 = pick_points_for_panelC(sim_dat_show, n_per_temp = 5)
+
+true_show = true_ab_sim %>%
+  filter(line_sim %in% show_lines)
+
+line_cols = scales::hue_pal()(n_show_lines)
+names(line_cols) = as.character(show_lines)
+
+# recovered simulated z,sCTmax
+sim_zs = recovered_sim %>%
+  transmute(z = z_hat, sCTmax = sCTmax_hat) %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+# Common limits
+# z,sCTmax panels: encompass all data across bottom row panels
+# a,B gets its own broad range for top row panels
+
+# pD: Recovered a_hat/B_hat from simulation (not true parameters)
+recovered_ab_sim = data.frame(
+  a = recovered_sim$a_hat,
+  B = recovered_sim$B_hat
+)
+
+# pF: Empirical Soto a,B estimates — "strong correlation"
+emp_ab_df = data.frame(a = a_obs, B = B_obs)
+
+# Shared a,B limits across pA, pD, pF
+ab_shared = bind_rows(
+  null_ab,
+  recovered_ab_sim,
+  emp_ab_df
+)
+
+
+zs_all = bind_rows(
+  emp_zs %>% mutate(source = "emp"),
+  sim_zs %>% mutate(source = "sim")
+)
+
+xlims_zs = range(zs_all$sCTmax, na.rm = TRUE)
+ylims_zs = range(zs_all$z, na.rm = TRUE)
+xpad_zs = 0.04 * diff(xlims_zs)
+ypad_zs = 0.04 * diff(ylims_zs)
+xlims_zs = c(xlims_zs[1] - xpad_zs, xlims_zs[2] + xpad_zs)
+ylims_zs = c(ylims_zs[1] - ypad_zs, ylims_zs[2] + ypad_zs)
+
+ab_all = bind_rows(
+  null_ab %>% mutate(source = "null"),
+  tibble(a = a_obs, B = B_obs, source = "emp")
+)
+xlims_ab = range(ab_all$a, na.rm = TRUE)
+ylims_ab = range(ab_all$B, na.rm = TRUE)
+xpad_ab = 0.04 * diff(xlims_ab)
+ypad_ab = 0.04 * diff(ylims_ab)
+
+xlims_ab_shared = range(ab_shared$a, na.rm = TRUE)
+ylims_ab_shared = range(ab_shared$B, na.rm = TRUE)
+xpad_ab_shared = 0.04 * diff(xlims_ab_shared)
+ypad_ab_shared = 0.04 * diff(ylims_ab_shared)
+xlims_ab_shared = c(xlims_ab_shared[1] - xpad_ab_shared, xlims_ab_shared[2] + xpad_ab_shared)
+ylims_ab_shared = c(ylims_ab_shared[1] - ypad_ab_shared, ylims_ab_shared[2] + ypad_ab_shared)
+
+# correlations for annotations
+r_emp = cor(emp_zs$z, emp_zs$sCTmax, use = "complete.obs")
+r_sim = cor(sim_zs$z, sim_zs$sCTmax, use = "complete.obs")
+
+
+# Transform null a,B cloud into z/sCTmax space
+null_zs_transformed = ab_to_zs(null_ab$a, null_ab$B) %>%
+  as.data.frame() %>%
+  filter(is.finite(z), is.finite(sCTmax), z > 0)
+
+# Limits for the transformed null cloud
+xlims_null_zs = range(null_zs_transformed$sCTmax, na.rm = TRUE)
+ylims_null_zs = range(null_zs_transformed$z, na.rm = TRUE)
+xpad_null = 0.04 * diff(xlims_null_zs)
+ypad_null = 0.04 * diff(ylims_null_zs)
+xlims_null_zs = c(xlims_null_zs[1] - xpad_null, xlims_null_zs[2] + xpad_null)
+ylims_null_zs = c(ylims_null_zs[1] - ypad_null, ylims_null_zs[2] + ypad_null)
+
+# annotation layer
+annot_label = function(label) {
+  geom_text(
+    data = data.frame(x = -Inf, y = Inf, label = label),
+    aes(x = x, y = y, label = label),
+    hjust = -0.1, vjust = 1.5, size = 4, inherit.aes = FALSE
+  )
+}
+
+arrow_plot <- ggplot() +
+  geom_segment(
+    aes(x = 0, y = 0.5, xend = 1, yend = 0.5),
+    arrow = arrow(length = unit(0.15, "inches")),
+    linewidth = 1.2
+  ) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+double_arrow_plot <- ggplot() +
+  geom_segment(
+    aes(x = 0, y = 0.5, xend = 1, yend = 0.5),
+    arrow = arrow(length = unit(0.15, "inches"),ends="both"),
+    linewidth = 1.2,
+  ) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+arrow_plot_vertical <- ggplot() +
+  geom_segment(
+    aes(x = 0.5, y = 0, xend = 0.5, yend = 1),
+    arrow = arrow(length = unit(0.15, "inches"), ends="both"), linewidth = 1.2) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+dashed_plot_vertical <- ggplot() +
+  geom_segment(
+    aes(x = 0.5, y = 0, xend = 0.5, yend = 1),
+    linetype = "dashed", linewidth = 1.2) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+```
+
+```{r}
+# BUILD PANELS (Figure 3)
+# SMA helper
+
+sma_fit <- function(x, y){
+  r <- cor(x, y, use="complete.obs")
+  slope <- sign(r) * (sd(y, na.rm=TRUE) / sd(x, na.rm=TRUE))
+  intercept <- mean(y, na.rm=TRUE) - slope * mean(x, na.rm=TRUE)
+  list(
+    slope = slope,
+    intercept = intercept,
+    rho = r
+  )
+}
+
+# fits for each panel
+fit_B <- sma_fit(null_zs_transformed$sCTmax, null_zs_transformed$z)
+fit_C <- sma_fit(recovered_ab_sim$a, recovered_ab_sim$B)
+fit_F <- sma_fit(sim_zs$sCTmax, sim_zs$z)
+fit_D <- sma_fit(emp_ab_df$a, emp_ab_df$B)
+fit_G <- sma_fit(emp_zs$sCTmax, emp_zs$z)
+
+beta_lab <- function(b){
+  paste0("\u03B2 = ", sprintf("%.2f", b))
+}
+
+rho_lab <- function(r){
+  paste0("\u03C1 = ", sprintf("%.2f", r))
+}
+
+# pA
+
+pA = dens_ab(
+  null_ab,
+  x_col = "a", y_col = "B",
+  title = "", subtitle = "",
+  xlims = range(null_ab$a),
+  ylims = range(null_ab$B)
+) +
+  annot_label("no covariance") +
+  coord_cartesian(xlim = xlims_ab_shared, ylim = ylims_ab_shared, clip = "off")+
+  labs(tag = "A")+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))+
+  labs(x="Intercept (\u03b1)", y="Slope (\u03b2)")
+
+# pE (null → zs)
+
+pE = dens_zs(
+  null_zs_transformed,
+  title = "", subtitle = "",
+  xlims = xlims_null_zs,
+  ylims = ylims_null_zs
+) +
+  geom_abline(
+    intercept = fit_B$intercept,
+    slope = fit_B$slope,
+    color = "#9C27FF",
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  annotate(
+    "text",
+    x = 41.5, y = 5.5,
+    label = beta_lab(fit_B$slope),
+    hjust = 0
+  ) +
+  annotate(
+    "text",
+    x = 41.5, y = 5.3,
+    label = rho_lab(fit_B$rho),
+    hjust = 0
+  ) +
+  annot_label("high induced covariance") +
+  coord_cartesian(xlim = c(41,49), ylim = c(3,6), clip = "off")+
+  labs(tag = "E")+
+  draw_label("Nonlinear Reparameterization", x = 49.5, y = 6.65, fontface = "italic", size = 9)+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+
+# pB (TDT curves)
+
+pB = ggplot() +
+  geom_point(
+    data = sim_dat_show5,
+    aes(x = Temp, y = y, color = factor(line_sim)),
+    alpha = 0.5, size = 1.5
+  ) +
+  geom_abline(
+    data = true_show,
+    aes(intercept = a, slope = B, color = factor(line_sim)),
+    linewidth = 1.0, show.legend = FALSE
+  ) +
+  scale_color_manual(values = line_cols) +
+  labs(
+    tag = "B", subtitle = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none",
+    plot.title = element_text(face = "bold")
+  )+
+  coord_cartesian(clip = "off")+
+  draw_label("Reestimate linear fits \nbased on generated points", x = 39.5, y = 2.52, fontface = "italic", size = 9)+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+
+# pC (recovered a,B)
+
+pC = dens_ab(
+  recovered_ab_sim,
+  x_col = "a", y_col = "B",
+  title = "Simulated Data", subtitle = "     (Under Null)",
+  xlims = range(recovered_ab_sim$a),
+  ylims = range(recovered_ab_sim$B)
+) +
+  geom_abline(
+    intercept = fit_C$intercept,
+    slope = fit_C$slope,
+    color = "#9C27FF",
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  annotate(
+    "text",
+    x = 12,
+    y = max(recovered_ab_sim$B),
+    label = beta_lab(fit_C$slope),
+    hjust = 0
+  ) +
+  annotate(
+    "text",
+    x = 12,
+    y = max(recovered_ab_sim$B) * 1.1,
+    label = rho_lab(fit_C$rho),
+    hjust = 0
+  ) +
+  annot_label("high induced covariance") +
+  coord_cartesian(xlim = xlims_ab_shared, ylim = ylims_ab_shared, clip = "off")+ 
+  labs(tag = "C")+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))+
+  labs(x="Intercept (\u03b1)", y="Slope (\u03b2)")
+
+# pF (sim zs)
+
+pF = dens_zs(
+  sim_zs,
+  title = "", subtitle = "",
+  xlims = c(41,49),
+  ylims = c(2,6)
+) +
+  geom_abline(
+    intercept = fit_F$intercept,
+    slope = fit_F$slope,
+    color = "#9C27FF",
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  annotate(
+    "text",
+    x = 41.5, y = 5.5,
+    label = beta_lab(fit_F$slope),
+    hjust = 0
+  ) +
+  annotate(
+    "text",
+    x = 41.5, y = 5.3,
+    label = rho_lab(fit_F$rho),
+    hjust = 0
+  ) +
+  annot_label("high induced covariance") +
+  coord_cartesian(xlim = c(41,49), ylim = c(3,6), clip = "off")+ 
+  labs(tag = "F")+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+
+# pD (empirical a,B)
+
+pD = dens_ab(
+  emp_ab_df,
+  x_col = "a", y_col = "B",
+  title = "Empirical Data", subtitle = "",
+  xlims = range(emp_ab_df$a),
+  ylims = range(emp_ab_df$B)
+) +
+  geom_abline(
+    intercept = fit_D$intercept,
+    slope = fit_D$slope,
+    color = "#9C27FF",
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  annotate(
+    "text",
+    x = 11,
+    y = max(recovered_ab_sim$B),
+    label = beta_lab(fit_D$slope),
+    hjust = 0
+  ) +
+  annotate(
+    "text",
+    x = 11,
+    y = max(recovered_ab_sim$B)*1.1 ,
+    label = "\u03C1 < -0.99",
+    hjust = 0
+  ) +
+  annot_label("high induced covariance") +
+  coord_cartesian(xlim = xlims_ab_shared, ylim = ylims_ab_shared, clip = "off")+ 
+  labs(tag = "D")+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))+
+  labs(x="Intercept (\u03b1)", y="Slope (\u03b2)")
+
+# pG (empirical zs)
+
+pG = dens_zs(
+  emp_zs,
+  title = "", subtitle = "",
+  xlims = c(43,47.5),
+  ylims = c(3,6)
+) +
+  geom_abline(
+    intercept = fit_G$intercept,
+    slope = fit_G$slope,
+    color = "#9C27FF",
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  annotate(
+    "text",
+    x = 42.5, y = 5.5,
+    label = beta_lab(fit_G$slope),
+    hjust = 0
+  ) +
+  annotate(
+    "text",
+    x = 42.5, y = 5.3,
+    label = rho_lab(fit_G$rho),
+    hjust = 0
+  ) +
+  annot_label("high induced covariance") +
+  coord_cartesian(xlim = c(41,49), ylim = c(3,6), clip = "off")+ 
+  labs(tag = "G")+
+  theme(axis.line = element_line(linewidth = 0.7, colour = "black"))
+
+pad_labels <- function(x, width = 6) {
+  formatted <- scales::label_number(accuracy = 0.1)(x)
+  formatC(formatted, width = width, flag = " ")  # pad with leading spaces
+}
+#this is plot B but everything is blank. A scaled plot spacer.
+pB_fake = ggplot() +
+  geom_point(
+    data = sim_dat_show5,
+    aes(x = Temp, y = y, color = factor(line_sim)),
+    alpha = 0.5, size = 1.5
+  ) +
+  geom_abline(
+    data = true_show,
+    aes(intercept = a, slope = B, color = factor(line_sim)),
+    linewidth = 1.0, show.legend = FALSE
+  ) +
+  scale_color_manual(values = line_cols) +
+  labs(tag="B",subtitle = "",
+    x = "Temperature (°C)",
+    y = expression(log[10]*"(time to failure)")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none",
+    plot.title = element_text(face = "bold")
+  )+
+  coord_cartesian(clip = "off") +
+    scale_color_manual(values = rep("white", 20)) +   # adjust length to n categories
+  scale_fill_manual(values = rep("white", 20)) +
+  theme(
+    axis.text  = element_text(color = "white"),
+    axis.title = element_text(color = "white"),
+    axis.ticks = element_line(color = "white"),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background   = element_rect(fill = "white", color = NA),
+    legend.position = "none"
+  )+theme(
+  axis.line = element_line(color = "white"),
+  plot.tag = element_text(color="white")
+)
+
+# Combine
+
+divider <- ggplot() +
+  geom_vline(xintercept = 0.5, linetype = "dashed", linewidth = 0.7) +
+  theme_void() +
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1))
+
+blank_panel <- ggplot() +theme_void() +labs(x = NULL, y = NULL)
+fig3_main = (
+  (pA | pB | pC | blank_panel | pD) /
+  (pE | pB_fake | pF | blank_panel | pG)
+) +
+  plot_layout(
+    widths = c(1,1,1,0.07,1),
+    heights = c(1,1),
+    guides="collect",
+    axes = "collect",
+    axis_titles = "collect"
+  )+
+  inset_element(arrow_plot, 0.12, 4, 0.17, 0)+
+  inset_element(arrow_plot, 0.35, 4.4, 0.40, 0)+
+  inset_element(double_arrow_plot, 0.64, 4, 0.76, 0)+
+  inset_element(double_arrow_plot, 0.64, 1, 0.76, 0)+
+  inset_element(dashed_plot_vertical,0, 2.6, 1.41, -0.2)+
+  inset_element(arrow_plot_vertical,0, 1.25, 1.86, 1.05)+
+  inset_element(arrow_plot_vertical,0, 1.25, 1.09, 1.05)+
+  inset_element(arrow_plot_vertical,0, 1.25, 0.15, 1.05)&
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+fig3_main
+```
+
+
+
+Optimization to obtain parameters above
+```{r}
+compute_moments <- function(df) {
+  c(mean_a = mean(df$a, na.rm = TRUE),
+    mean_B = mean(df$B, na.rm = TRUE),
+    var_a  = var(df$a, na.rm = TRUE),
+    var_B  = var(df$B, na.rm = TRUE),
+    cor = cor(df$a, df$B, use = "complete.obs"))}
+  
+  moment_loss <- function(sim_mom, emp_mom) {
+  sum((sim_mom - emp_mom)^2, na.rm = TRUE)}
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+e_grid = seq(0.8, 1.5, length.out = 8)
+a_grid = seq(0.01, 0.1, length.out = 9)
+B_grid = seq(0.1, 0.5, length.out = 9)
+
+n_reps = 10   
+
+grid = expand.grid(
+  e_var_scalar = e_grid,
+  a_var_scalar = a_grid,
+  B_var_scalar = B_grid
+)
+
+results = data.frame()
+
+set.seed(123)
+
+# ============================================================
+# GRID SEARCH
+# ============================================================
+
+for (i in seq_len(nrow(grid))) {
+
+  e_val = grid$e_var_scalar[i]
+  a_val = grid$a_var_scalar[i]
+  B_val = grid$B_var_scalar[i]
+
+  losses_rep = numeric(n_reps)
+
+  for (r in 1:n_reps) {
+
+    # --- sigma_e ---
+    sigma_e2_tmp = estimate_sigma_e2_full(dat_sex, n_per_temp)
+
+    # --- slope variance ---
+    var_B_obs = var(B_obs, na.rm = TRUE)
+
+    # --- intercept variance ---
+    var_a_obs = var(a_obs, na.rm = TRUE) * a_val
+
+    inflation_a_tmp = sigma_e2_tmp * (
+      1 / (n_per_temp * n_temps) +
+      (T_bar^2) / (n_per_temp * SS_Temp)
+    )
+# --- slope variance ---
+var_B_obs = var(B_obs, na.rm = TRUE)
+sigma_B2_tmp = var_B_obs - sigma_e2_tmp / (n_per_temp * SS_Temp)
+#scale B
+sigma_B2_tmp = sigma_B2_tmp * B_val
+
+# --- intercept variance ---
+var_a_obs = var(a_obs, na.rm = TRUE) 
+
+inflation_a_tmp = sigma_e2_tmp * (
+  1 / (n_per_temp * n_temps) +
+  (T_bar^2) / (n_per_temp * SS_Temp)
+)
+#scale a
+sigma_a2_tmp = (var_a_obs - inflation_a_tmp) * a_val
+#scale error
+sigma_e2_tmp = sigma_e2_tmp*e_val
+
+# --- VALIDITY CHECK ---
+if (sigma_a2_tmp <= 0 || sigma_B2_tmp <= 0) {
+  losses_rep[r] = NA
+  next
+}
+
+    # --- sigmas ---
+    sigma_a_tmp = sqrt(sigma_a2_tmp)
+    sigma_B_tmp = sqrt(sigma_B2_tmp)
+    sigma_e_tmp = sqrt(sigma_e2_tmp)
+
+    # --- simulate ---
+    sim_out_tmp = simulate_one_dataset_ab(
+      mu_a = mu_a,
+      mu_B = mu_B,
+      sigma_a = sigma_a_tmp,
+      sigma_B = sigma_B_tmp,
+      sigma_e = sigma_e_tmp,
+      n_lines = nrow(pars_sex),
+      temps = temps_sim,
+      n_per_temp = n_per_temp
+    )
+
+    recovered_tmp = sim_out_tmp$recovered
+
+    sim_ab_df = data.frame(
+      a = recovered_tmp$a_hat,
+      B = recovered_tmp$B_hat
+    )
+
+    # --- loss ---
+    sim_mom = compute_moments(sim_ab_df)
+    emp_mom = compute_moments(emp_ab_df)
+    losses_rep[r] = moment_loss(sim_mom, emp_mom)
+  }
+
+  # remove invalid reps
+valid_losses = losses_rep[is.finite(losses_rep)]
+
+if (length(valid_losses) < max(3, n_reps / 3)) {
+  # too many invalid reps → discard this grid point
+  loss_mean = NA
+  loss_sd = NA
+} else {
+  loss_mean = mean(valid_losses)
+  loss_sd = sd(valid_losses)
+}
+
+results = rbind(results, data.frame(
+  e_var_scalar = e_val,
+  a_var_scalar = a_val,
+  B_var_scalar = B_val,
+  loss_mean = loss_mean,
+  loss_sd = loss_sd,
+  n_valid = length(valid_losses)
+))
+results_clean = results %>%
+  filter(is.finite(loss_mean))
+}
+
+# BEST PARAMETER SET
+
+best_row = results_clean[which.min(results_clean$loss_mean), ]
+
+cat("Best parameters:\n")
+print(best_row)
+```
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Table 2 + GWAS analysis 
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+
+```{r}
+soto.dat = read.csv("Soto_etal_data/KO_4temp_100DGRP.csv")
+
+
+#format the data for the model
+soto.dat$time=soto.dat$KO/60
+soto.dat$log_tf=log10(soto.dat$time)
+soto.dat$Temp = soto.dat$temp
+soto.dat$line=soto.dat$Geno
+```
+
+We also include centered estimates. Although SNP significance is mostly unchanged by centering, since it only affects non-biological signal.
+
+```{r}
+#first, we center with respect to x to reduce unidentifiability in a/B parameterization (centering around a)
+Tbar = mean(soto.dat$Temp, na.rm = TRUE)
+soto.dat.centered <- soto.dat %>%
+  mutate(
+    Temp_raw = Temp,
+    Temp = Temp_raw - Tbar
+  )
+
+centered.pars.soto <- data.frame(
+  z = numeric(),
+  sCTmax = numeric(),
+  a = numeric(),
+  B = numeric(),
+  sex = character(),
+  line=numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (geno_i in unique(soto.dat.centered$Geno)) {
+  data_i <- soto.dat.centered[soto.dat.centered$Geno == geno_i, ]
+  for (sex_j in c("F", "M")) {
+    data_ij <- data_i[data_i$sex == sex_j, ]
+    data_means_ij = data_ij %>%
+  group_by(Temp) %>%
+  summarise(
+    mean_tf = mean(time, na.rm = TRUE),
+    .groups = "drop"
+  )
+    lm_ij <- lm(log10(mean_tf) ~ Temp, data = data_means_ij)
+    a_hat <- coef(lm_ij)[1]
+    B_hat <- coef(lm_ij)[2]
+    sCTmax_ij <- -a_hat / B_hat
+    #version of sCTmax with NEW PARAMETERIZATION
+    z_ij <- -1 / B_hat
+    centered.pars.soto <- rbind(
+      centered.pars.soto,
+      data.frame(z = z_ij, sCTmax = sCTmax_ij,a=a_hat, B=B_hat, sex = sex_j,line=geno_i, stringsAsFactors = FALSE))
+  }}
+
+pca.centered.males <- prcomp(centered.pars.soto[centered.pars.soto$sex=="M", c("a", "B")], scale. = TRUE)
+pca.centered.females <- prcomp(centered.pars.soto[centered.pars.soto$sex=="F", c("a", "B")], scale. = TRUE)
+
+
+
+#make phenotype files
+DGRP2_PC1_Centered = data.frame(DGRP=c(centered.pars.soto$line[centered.pars.soto$sex=="M"]),
+                                Male=c(pca.centered.males$x[,1]),
+                                Female=c(pca.centered.females$x[,1]))
+DGRP2_z_Centered = data.frame(DGRP=c(centered.pars.soto$line[centered.pars.soto$sex=="M"]),
+                              Male=c(centered.pars.soto$z[centered.pars.soto$sex=="M"]),
+                              Female=c(centered.pars.soto$z[centered.pars.soto$sex=="F"]))
+DGRP2_sCTmax_Centered = data.frame(DGRP=c(centered.pars.soto$line[centered.pars.soto$sex=="M"]),
+                                   Male=c(centered.pars.soto$sCTmax[centered.pars.soto$sex=="M"]),
+                                   Female=c(centered.pars.soto$sCTmax[centered.pars.soto$sex=="F"]))
+
+summary(pca.centered.males)
+summary(pca.centered.females)
+
+# #pc1 describes much less of the variance!!! z and sCTmax might actually explain some data now.
+# ggplot(centered.pars.soto.male)+
+#   geom_histogram(aes(x=PC1))
+
+
+
+
+```
+
+
+Now get the normal uncentered parameter estimates 
+```{r}
+real.pars.soto = data.frame(
+  z = numeric(),
+  sCTmax = numeric(),
+  a = numeric(),
+  B = numeric(),
+  sex = character(),
+  line = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (geno_i in unique(soto.dat$Geno)) {
+  data_i = soto.dat[soto.dat$Geno == geno_i, ]
+
+  for (sex_j in c("F", "M")) {
+    data_ij = data_i[data_i$sex == sex_j, ]
+    if (nrow(data_ij) == 0) next
+    if (length(unique(data_ij$Temp)) < 2) next
+
+    data_means_ij = data_ij %>%
+      group_by(Temp) %>%
+      summarise(mean_tf = mean(time, na.rm = TRUE), .groups = "drop")
+
+    if (nrow(data_means_ij) < 2) next
+
+    lm_ij = lm(log10(mean_tf) ~ Temp, data = data_means_ij)
+    a_hat = coef(lm_ij)[1]
+    B_hat = coef(lm_ij)[2]
+
+    real.pars.soto = rbind(
+      real.pars.soto,
+      data.frame(
+        z = -1 / B_hat,
+        sCTmax = -a_hat / B_hat,
+        a = a_hat,
+        B = B_hat,
+        sex = sex_j,
+        line = geno_i,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+rownames(real.pars.soto) = NULL
+```
+
+```{r}
+#refit PCA for these parameters
+pca.males <- prcomp(real.pars.soto[real.pars.soto$sex=="M", c("a", "B")], scale. = TRUE)
+pca.females <- prcomp(real.pars.soto[real.pars.soto$sex=="F", c("a", "B")], scale. = TRUE)
+
+summary(pca.males)
+summary(pca.females)
+
+#redo PCA in B/sCTmax parameterization
+pca.sCT.males <- prcomp(
+  real.pars.soto[real.pars.soto$sex=="M", c("B", "sCTmax")],
+  scale. = TRUE
+)
+
+pca.sCT.females <- prcomp(
+  real.pars.soto[real.pars.soto$sex=="F", c("B", "sCTmax")],
+  scale. = TRUE
+)
+
+#make phenotype files
+DGRP2_PC1B = data.frame(DGRP=c(real.pars.soto$line[real.pars.soto$sex=="M"]),
+                                Male=c(pca.males$x[,1]),
+                                Female=c(pca.females$x[,1]))
+DGRP2_PC2B = data.frame(DGRP=c(real.pars.soto$line[real.pars.soto$sex=="M"]),
+                                Male=c(pca.males$x[,2]),
+                                Female=c(pca.females$x[,2]))
+DGRP2_zB = data.frame(DGRP=c(real.pars.soto$line[real.pars.soto$sex=="M"]),
+                              Male=c(real.pars.soto$z[real.pars.soto$sex=="M"]),
+                              Female=c(real.pars.soto$z[real.pars.soto$sex=="F"]))
+DGRP2_sCTmaxB = data.frame(DGRP=c(real.pars.soto$line[real.pars.soto$sex=="M"]),
+                                   Male=c(real.pars.soto$sCTmax[real.pars.soto$sex=="M"]),
+                                   Female=c(real.pars.soto$sCTmax[real.pars.soto$sex=="F"]))
+DGRP2_PC1_sCT = data.frame(
+  DGRP = real.pars.soto$line[real.pars.soto$sex=="M"],
+  Male = pca.sCT.males$x[,1],
+  Female = pca.sCT.females$x[,1]
+)
+
+DGRP2_PC2_sCT = data.frame(
+  DGRP = real.pars.soto$line[real.pars.soto$sex=="M"],
+  Male = pca.sCT.males$x[,2],
+  Female = pca.sCT.females$x[,2]
+)
+```
+
+```{r}
+aB_long <- data.frame(
+  DGRP = real.pars.soto$line[real.pars.soto$sex=="M"],
+  Male = real.pars.soto$a[real.pars.soto$sex=="M"],
+  Female = real.pars.soto$a[real.pars.soto$sex=="F"]
+) %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "aB")
+
+BB_long <- data.frame(
+  DGRP = real.pars.soto$line[real.pars.soto$sex=="M"],
+  Male = real.pars.soto$B[real.pars.soto$sex=="M"],
+  Female = real.pars.soto$B[real.pars.soto$sex=="F"]
+) %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "BB")
+
+PC1B_long <- DGRP2_PC1B %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "PC1B")
+
+PC2B_long <- DGRP2_PC2B %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "PC2B")
+
+zB_long <- DGRP2_zB %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "zB")
+
+sCTmaxB_long <- DGRP2_sCTmaxB %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "sCTmaxB")
+
+PC1C_long <- DGRP2_PC1_Centered %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "PC1_Centered")
+
+zC_long <- DGRP2_z_Centered %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "z_Centered")
+
+sCTmaxC_long <- DGRP2_sCTmax_Centered %>%
+  pivot_longer(cols = c(Male, Female),
+               names_to = "sex",
+               values_to = "sCTmax_Centered")
+
+PC1_sCT_long <- DGRP2_PC1_sCT %>%
+  pivot_longer(
+    cols = c(Male, Female),
+    names_to = "sex",
+    values_to = "PC1_sCT"
+  )
+
+PC2_sCT_long <- DGRP2_PC2_sCT %>%
+  pivot_longer(
+    cols = c(Male, Female),
+    names_to = "sex",
+    values_to = "PC2_sCT"
+  )
+
+final_df <- PC1B_long %>%
+  left_join(PC2B_long, by = c("DGRP", "sex")) %>%
+  left_join(zB_long, by = c("DGRP", "sex")) %>%
+  left_join(sCTmaxB_long, by = c("DGRP", "sex")) %>%
+  left_join(aB_long, by = c("DGRP", "sex")) %>%
+  left_join(BB_long, by = c("DGRP", "sex")) %>%
+  left_join(PC1C_long, by = c("DGRP", "sex")) %>%
+  left_join(zC_long, by = c("DGRP", "sex")) %>%
+  left_join(sCTmaxC_long, by = c("DGRP", "sex"))%>%
+left_join(PC1_sCT_long, by=c("DGRP","sex")) %>%
+left_join(PC2_sCT_long, by=c("DGRP","sex"))
+
+
+for (i in 1:length(final_df$DGRP)){
+  if (nchar(as.character(final_df$DGRP[i]))==2){
+final_df$DGRP[i]=paste("DGRP_0",final_df$DGRP[i])}
+  if (nchar(as.character(final_df$DGRP[i]))==1){
+final_df$DGRP[i]=paste("DGRP_00",final_df$DGRP[i])}
+  if (nchar(as.character(final_df$DGRP[i]))==3){
+final_df$DGRP[i]=paste("DGRP_",final_df$DGRP[i])}
+}
+
+final_df$sex[final_df$sex=="Male"]="M"
+final_df$sex[final_df$sex=="Female"]="F"
+
+colnames(final_df) = c("DGRP","sex","PC1","PC2","z","sCTmax","a","B","PC1Centered","zCentered","sCTmaxCentered","PC1_sCTB","PC2_sCTB")
+
+
+final_df$DGRP <- gsub("\\\\_", "_", final_df$DGRP)   # remove escape slashes
+final_df$DGRP <- gsub(" ", "", final_df$DGRP)       # remove spaces
+
+
+head(final_df)
+```
+
+```{r}
+#this table is exported for DGRPool analysis
+write.table(
+  final_df,
+  file = "DGRP2_all.txt",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE
+)
+```
+
+
+```{r}
+#Figure S5
+pc_long <- final_df %>%
+  dplyr::select(PC1, PC2, sex) %>%
+  pivot_longer(cols = c(PC1, PC2),
+               names_to = "PC",
+               values_to = "value")
+
+ggplot(pc_long, aes(x = value, fill = sex)) +
+  geom_density(alpha = 0.4) +
+  facet_wrap(~PC, scales = "free") +
+  theme_minimal() +
+  labs(title = "", x = "Value", y = "Density")+
+  xlim(c(-4,4))+
+  theme(strip.text = element_text(size = 16, face = "bold"))
+```
+The following analysis uses the results of the DGRPool analysis
+
+~~~~~~~~~~~~~~~~~~~~~~
+Final GWAS output analysis
+```{r}
+# 1. Define traits and file paths
+traits <- c("PC1", "PC2", "B", "a", "z", "sCTmax")
+
+female_files <- c(
+  "GWAS_Results/PC1_female.tsv",
+  "GWAS_Results/PC2_female.tsv",
+  "GWAS_Results/a_female.tsv",
+  "GWAS_Results/B_female.tsv",
+  "GWAS_Results/z_female.tsv",
+  "GWAS_Results/sCTmax_female.tsv"
+)
+
+male_files <- c(
+  "GWAS_Results/PC1_male.tsv",
+  "GWAS_Results/PC2_male.tsv",
+  "GWAS_Results/a_male.tsv",
+  "GWAS_Results/B_male.tsv",
+  "GWAS_Results/z_male.tsv",
+  "GWAS_Results/sCTmax_male.tsv"
+)
+
+# Function to extract significant SNPs
+
+get_sig_snps <- function(file, cutoff = 1e-5) {
+  
+  dt <- read.csv(file, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  
+  unique(dt$ID[dt$P <= cutoff])
+}
+
+# Read all SNP sets
+traits <- c("PC1", "PC2", "B", "a", "z", "sCTmax")
+
+female_files_all <- list.files(pattern = "_female", full.names = TRUE)
+male_files_all   <- list.files(pattern = "_male", full.names = TRUE)
+
+# Match files to traits
+female_files <- c(
+  "GWAS_Results/PC1_female.tsv",
+  "GWAS_Results/PC2_female.tsv",
+  "GWAS_Results/B_female.tsv",
+  "GWAS_Results/a_female.tsv",
+  "GWAS_Results/z_female.tsv",
+  "GWAS_Results/sCTmax_female.tsv"
+)
+
+male_files <- c(
+  "GWAS_Results/PC1_male.tsv",
+  "GWAS_Results/PC2_male.tsv",
+  "GWAS_Results/B_male.tsv",
+  "GWAS_Results/a_male.tsv",
+  "GWAS_Results/z_male.tsv",
+  "GWAS_Results/sCTmax_male.tsv"
+)
+
+names(female_files) <- traits
+names(male_files)   <- traits
+
+# Extract SNPs
+female_snps <- lapply(female_files, get_sig_snps)
+male_snps   <- lapply(male_files, get_sig_snps)
+
+# Build matrix
+n <- length(traits)
+result_mat <- matrix("", n, n)
+rownames(result_mat) <- traits
+colnames(result_mat) <- traits
+
+for (i in 1:n) {
+  for (j in 1:n) {
+    
+    f_overlap <- length(intersect(female_snps[[i]], female_snps[[j]]))
+    m_overlap <- length(intersect(male_snps[[i]], male_snps[[j]]))
+    
+    result_mat[i, j] <- paste0(f_overlap, "/", m_overlap)
+  }
+}
+
+print(result_mat)
+```
+
+```{r}
+# Females
+female_extra <- setdiff(
+  union(female_snps[["z"]], female_snps[["sCTmax"]]),
+  female_snps[["PC1"]]
+)
+length(female_extra)
+
+# Males
+male_extra <- setdiff(
+  union(male_snps[["z"]], male_snps[["sCTmax"]]),
+  male_snps[["PC1"]]
+)
+length(male_extra)
+
+# Females
+female_extra <- setdiff(
+  union(female_snps[["a"]], female_snps[["B"]]),
+  female_snps[["PC1"]]
+)
+length(female_extra)
+
+# Males
+male_extra <- setdiff(
+  union(male_snps[["a"]], male_snps[["B"]]),
+  male_snps[["PC1"]]
+)
+length(male_extra)
+
+# difference in total number of significant SNPS from a/B vs sCTmax/z parameterization
+length(union(female_snps[["z"]], female_snps[["sCTmax"]]))-length(union(female_snps[["a"]], female_snps[["B"]]))
+length(union(male_snps[["z"]], male_snps[["sCTmax"]]))-length(union(male_snps[["a"]], male_snps[["B"]]))
+
+# of significant SNPS associated with z, but not sCTmax
+length(union(female_snps[["z"]],female_snps[["sCTmax"]]))
+length(union(female_snps[["a"]],female_snps[["B"]]))
+```
+
+Same thing but for Table S1
+```{r}
+
+# Traits to compare
+traits <- c("PC1", "PC2", "B", "sCTmax")
+
+# GWAS result files
+female_files <- c(
+  "PC1_female_sCT.tsv",
+  "PC2_female_sCT.tsv",
+  "B_female.tsv",
+  "sCTmax_female.tsv"
+)
+
+male_files <- c(
+  "PC1_male_sCT.tsv",
+  "PC2_male_sCT.tsv",
+  "B_male.tsv",
+  "sCTmax_male.tsv"
+)
+
+names(female_files) <- traits
+names(male_files) <- traits
+
+# Function to get significant SNPs
+get_sig_snps <- function(file, cutoff = 1e-5) {
+
+  dt <- read.csv(
+    file,
+    sep = "\t",
+    header = TRUE,
+    stringsAsFactors = FALSE
+  )
+
+  unique(dt$ID[dt$P <= cutoff])
+}
+
+# Read SNP sets
+female_snps <- lapply(female_files, get_sig_snps)
+male_snps   <- lapply(male_files, get_sig_snps)
+
+# Build overlap matrix
+n <- length(traits)
+
+result_mat <- matrix("", nrow = n, ncol = n)
+rownames(result_mat) <- traits
+colnames(result_mat) <- traits
+
+for (i in seq_len(n)) {
+  for (j in seq_len(n)) {
+
+    f_overlap <- length(
+      intersect(female_snps[[i]],
+                female_snps[[j]])
+    )
+
+    m_overlap <- length(
+      intersect(male_snps[[i]],
+                male_snps[[j]])
+    )
+
+    result_mat[i, j] <- paste0(f_overlap, "/", m_overlap)
+  }
+}
+
+print(result_mat)
+
+
+```
+
+```{r}
+#Tests for whether # of significant SNPs deviates from what is expected under random chance
+gwas_null_p <- function(Nsig, Ntests=2000000, alpha=1e-5){
+  pbinom(
+    Nsig-1,
+    size=Ntests,
+    prob=alpha,
+    lower.tail=FALSE
+  )
+}
+#Females
+#PC1; PC2; B; a
+gwas_null_p(79); gwas_null_p(14); gwas_null_p(98); gwas_null_p(75)
+#sCTmax; PC1; PC2 (sCTmax/B)
+gwas_null_p(122); gwas_null_p(132); gwas_null_p(15)
+#Males
+#PC1; PC2; B; a
+gwas_null_p(28); gwas_null_p(12); gwas_null_p(27); gwas_null_p(27)
+#sCTmax; PC1; PC2 (sCTmax/B)
+gwas_null_p(122); gwas_null_p(28); gwas_null_p(28)
+```
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Figure S2
+```{r}
+rm(list = ls())
+library(tidyverse)
+```
+
+
+```{r}
+soto.dat = read.csv("Soto_etal_data/KO_4temp_100DGRP.csv")
+
+
+#format the data for the model
+soto.dat$time=soto.dat$KO/60
+soto.dat$log_tf=log10(soto.dat$time)
+soto.dat$Temp = soto.dat$temp
+soto.dat$line=soto.dat$Geno
+```
+
+```{r}
+#first, we center with respect to x to reduce unidentifiability in a/B parameterization (centering around a)
+Tbar = mean(soto.dat$Temp, na.rm = TRUE)
+soto.dat.centered <- soto.dat %>%
+  mutate(
+    Temp_raw = Temp,
+    Temp = Temp_raw - Tbar
+  )
+
+centered.pars.soto <- data.frame(
+  z = numeric(),
+  sCTmax = numeric(),
+  a = numeric(),
+  B = numeric(),
+  sex = character(),
+  line=numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (geno_i in unique(soto.dat.centered$Geno)) {
+  data_i <- soto.dat.centered[soto.dat.centered$Geno == geno_i, ]
+  for (sex_j in c("F", "M")) {
+    data_ij <- data_i[data_i$sex == sex_j, ]
+    data_means_ij = data_ij %>%
+  group_by(Temp) %>%
+  summarise(
+    mean_tf = mean(time, na.rm = TRUE),
+    .groups = "drop"
+  )
+    lm_ij <- lm(log10(mean_tf) ~ Temp, data = data_means_ij)
+    a_hat <- coef(lm_ij)[1]
+    B_hat <- coef(lm_ij)[2]
+    sCTmax_ij <- -a_hat / B_hat
+    #version of sCTmax with NEW PARAMETERIZATION
+    z_ij <- -1 / B_hat
+    centered.pars.soto <- rbind(
+      centered.pars.soto,
+      data.frame(z = z_ij, sCTmax = sCTmax_ij,a=a_hat, B=B_hat, sex = sex_j,line=geno_i, stringsAsFactors = FALSE))
+  }}
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# correlation for each sex
+cor.dat <- centered.pars.soto %>%
+  group_by(sex) %>%
+  summarise(
+    rho = cor(a, B, use = "complete.obs"),
+    x = min(a) + 0.05 * diff(range(a)),
+    y = max(B) - 0.05 * diff(range(B)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("\u03C1 = ", round(rho, 2))
+  )
+
+ggplot(centered.pars.soto, aes(x = a, y = B)) +
+  stat_density_2d_filled() +
+  geom_text(
+    data = cor.dat,
+    aes(x = 1.75, y = -0.12, label = label),
+    inherit.aes = FALSE,
+    color = "white",
+    size = 14 / .pt   # 14 pt text
+  ) +
+  facet_wrap(
+    ~sex,
+    nrow = 1,
+    labeller = labeller(sex = c(F = "Females",
+                                M = "Males"))
+  ) +
+  theme_minimal() +
+  labs(
+    x = "Intercept (\u03b1)",
+    y = "Slope (\u03b2)"
+  ) +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    strip.text = element_text(size = 14, face = "bold")
+  )
+```
+
+```{r}
+#extract centered parameter distribution stats for power analysis
+mean(centered.pars.soto$a);var(centered.pars.soto$a)
+mean(centered.pars.soto$B);var(centered.pars.soto$B)
+```
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Figure S3
+
+```{r}
+rm(list = ls())
+source("identifiability_functions.R")
+library(patchwork)
+library(tidyverse)
+
+soto.dat = read.csv("Soto_etal_data/KO_4temp_100DGRP.csv")
+head(soto.dat)
+#format the data for the model
+soto.dat$time=soto.dat$KO/60
+soto.dat$log_tf=log10(soto.dat$time)
+soto.dat$Temp = soto.dat$temp
+soto.dat$line=soto.dat$Geno
+soto.dat.m=soto.dat[soto.dat$sex=="M",]
+soto.dat.f=soto.dat[soto.dat$sex=="F",]
+```
+
+```{r}
+  soto_result.m.cor <- reaction_norm_null_test(
+    data = soto.dat.m,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = c("correlation"),
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+  soto_result.m.cov <- reaction_norm_null_test(
+    data = soto.dat.m,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = c("covariance"),
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+
+  print(soto_result.m.cor)
+  print(soto_result.m.cov)
+  wrap_plots((plot(soto_result.m.cor)+xlab("Correlation")),(plot(soto_result.m.cov)+xlab("Covariance")))+
+                plot_layout(guides = "collect") &
+                theme(legend.position = "bottom")&
+               theme(strip.text = element_blank(), strip.background = element_blank())
+  
+  #females
+    soto_result.f.cor <- reaction_norm_null_test(
+    data = soto.dat.f,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = "correlation",
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+    
+        soto_result.f.cov <- reaction_norm_null_test(
+    data = soto.dat.f,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = "covariance",
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+
+   print(soto_result.f.cor)
+  print(soto_result.f.cov)
+  wrap_plots((plot(soto_result.f.cor)+xlim(c(-1,-0.98))),
+             (plot(soto_result.f.cov)+ylab("")),
+             (plot(soto_result.m.cor)+xlab("Correlation")+xlim(c(-1,-0.98))),(plot(soto_result.m.cov)+xlab("Covariance")+ylab("")),nrow=2)+
+                plot_annotation(tag_levels = "A")+
+                plot_layout(guides = "collect") &
+                theme(legend.position = "bottom")&
+               theme(strip.text = element_blank(), strip.background = element_blank())&ylim(c(0,2000))
+
+```
+
+```{r}
+#covariance
+  soto_result.m <- reaction_norm_null_test(
+    data = soto.dat.m,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = "covariance",
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+
+  print(soto_result.m)
+  
+    soto_result.f <- reaction_norm_null_test(
+    data = soto.dat.f,
+    response = "log_tf",
+    predictor = "Temp",
+    group = "line",
+    statistic = "covariance",
+    alternative="two.sided",
+    n_sims = 5000,
+    center_predictor = FALSE,  # preserves intercept at Temp == 0
+    seed = 1
+  )
+
+  print(soto_result.f)
+```
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Figure S8
+
+```{r}
+library(mgcv)
+```
+
+```{r}
+rm(list = ls())
+#N=number of lines
+N=100
+#Panel 1
+set.seed(11)
+#Here we are testing the effect of n (samples per temp) on model identifiability
+#We will choose 5 equally spaced temps to take data at. Using a delta T with optimal performance in fig 1: 
+N_T=5
+delta.T=8
+temps = seq(20,44,0.1)
+sCTmax.mean = 46
+sCTmax.sd = 1
+z.mean = 4.5
+z.sd = 1
+#correlation between slope and intercept for between line variation (r.genetic) and between individual variation (r.plastic)
+#making it 0 to prove a point, but you could move it around.
+r.genetic = 0
+r.plastic=r.genetic
+#Constant variance across temperatures isn't a realistic assumption (Bullard et al, 2026) but it still demonstrates our point
+#It also is a simplifcation to assume non-stochastic errors, but again, that's ok for these purposes
+var.mean = 0.01
+sd.mean=sqrt(var.mean)
+cov.sctmax.z = r.genetic*z.sd*sCTmax.sd
+cov.indiv = r.plastic*z.sd*sCTmax.sd
+mu=c(sCTmax.mean,z.mean)
+sigma = matrix(data=c(sCTmax.sd^2,cov.sctmax.z,cov.sctmax.z,z.sd^2),nrow=2)
+sigma.indiv = matrix(data=c(sCTmax.sd^2,cov.indiv,cov.indiv,z.sd^2),nrow=2)
+temp_midpoint = (temps[1]+temps[length(temps)])/2
+temp.list.p1 = round(
+  seq(temp_midpoint + delta.T/2,
+      temp_midpoint - delta.T/2,
+      length.out = N_T), 1)
+n.list = c(1:100)
+
+#use this for distribution comparison throughout
+kl_mvn <- function(mu_hat, Sigma_hat, mu, Sigma) {
+  k <- length(mu)
+  0.5 * (log(det(Sigma) / det(Sigma_hat)) -k +sum(diag(solve(Sigma) %*% Sigma_hat)) +t(mu - mu_hat) %*% solve(Sigma) %*% (mu - mu_hat))
+}
+
+variable.n.df = data.frame(kl=rep(NA,length(n.list)),n=n.list)
+
+for (k in 1:length(n.list)){
+  n_k=n.list[k]
+  #Here we will generate the data
+TDT.df_k = data.frame(log10_tf=c(), temp=c(), line=c(),z=c(),sCTmax=c())
+  for (i in 1:N){
+    #genetic effects on TDT parameters (constant for a given line)
+    #we are just going to assume that 50% of the variation in TDT parameters is explained by genetics and 50% is individual (plastic), which is incorporated in the TDT.df_ij line. These are generalizations that won't affect our qualitative results
+    sCTmax_i = rnorm(1,sCTmax.mean,sCTmax.sd/2)
+    z_i = rnorm(1,z.mean,z.sd/2)
+    for (j in 1:length(temp.list.p1)){
+      temp_j=temp.list.p1[j]
+      #here we incorporate individual environmental (plastic) variation into our TDT parameters
+        sCTmax_ij = rnorm(n_k,mean=sCTmax_i,sCTmax.sd/2)
+        z_ij = rnorm(n_k,z_i,z.sd)
+      TDT.df_ij = data.frame(
+        #here we simulate the TDT data for a given line at a given temp. Note that individual variation in TDT parameters is incorporated here, as well as a general error term
+        log10_tf = rnorm(rep(1,n_k),(sCTmax_ij-temp_j)/z_ij,rep(sd.mean,n_k)),
+                             temp=rep(temp_j,n_k),line=rep(i,n_k))
+      TDT.df_k = rbind(TDT.df_k,TDT.df_ij)
+    }
+  }
+  #analyze the data for this n
+  
+  #run an lm to estimate the original pars
+  lines.df_k = data.frame(line=c(), slope = c(), intercept = c())
+  #fit least squares regression for each line
+  for (j in 1:N){
+    data_j = TDT.df_k[TDT.df_k$line==j,]
+    lm_j = lm(log10_tf~temp,data=data_j)
+    lines.df_k = rbind(lines.df_k, data.frame(line=j,slope=coefficients(lm_j)[2],intercept=coefficients(lm_j)[1]))
+  }
+  #reparameterize
+  lines.df_k$sCTmax = -lines.df_k$intercept/lines.df_k$slope
+  lines.df_k$z = -1/lines.df_k$slope
+  #KL divergence
+  mu_hat = colMeans(lines.df_k[,c("sCTmax","z")])
+  print(colMeans(lines.df_k[,c("slope","intercept")]))
+  sigma_hat = cov(lines.df_k[,c("sCTmax","z")])
+variable.n.df$kl[k] = kl_mvn(mu_hat,sigma_hat,mu,sigma)
+}
+```
+
+```{r}
+#panel 1:
+p1mod=lm(log(kl)~n,data=variable.n.df)
+pvalue=summary(p1mod)$coefficients[2,4]
+
+p1=ggplot(data=variable.n.df)+
+  geom_point(aes(y=log(kl),x=log10(n)))+
+  theme_classic()+
+  geom_smooth(aes(y=log(kl),x=log10(n)),method="lm",se=FALSE)+
+  xlab(expression(log[10] * "(" * n[per~temp] * ")"))+
+  ylab("ln(KL)")+
+  xlab(expression(n["per temp"])) +
+  annotate("text", x = 1, y = 7.5,
+           label = paste0("p = ", round(pvalue, 2)),
+           hjust = 1.1, vjust = 1.5,size=5)
+
+```
+
+```{r}
+#panel 2
+#here we are looking for the effect of number of temps
+#I chose 180 because it is divisible by all of the N_T integers below, and it is on par with the number of samples researchers typically use for a TDT study
+#n*N_T
+n.total=180
+N_T.list = c(2,3,4,5,6,9,10,12)
+delta.T = 8
+#This analysis is inherently limited because we can't sample at a fine resolution of N_T because it must be an integer and n must also be an integer. So, to reduce sampling error, we can either run this for many seeds and average our results, or we can increase N (number of lines). I'll opt for the former to maintain consistency with previous trials. 
+
+#number of seeds to try
+n_s=200
+
+variable.N_T.df=data.frame(kl=c(),N_T=c())
+
+#I know 4 for loops is a lot (don't tell the computer scientists), but it runs fairly quickly, and I feel that it shows the process more clearly than other methods
+
+for (s in 1:n_s){
+set.seed(s)
+  variable.N_T.df_s = data.frame(kl=rep(NA,length(N_T.list)),N_T=N_T.list)
+  
+for (k in 1: length(N_T.list)){
+  N_T_k=N_T.list[k]
+  temp.list_k = seq(temp_midpoint-delta.T/2,temp_midpoint+delta.T/2,length.out=N_T_k)
+  n_k=n.total/N_T_k
+  TDT.df_k = data.frame(log10_tf=c(), temp=c(), line=c(),z=c(),sCTmax=c())
+  
+    for (i in 1:N){
+      sCTmax_i = rnorm(1,sCTmax.mean,sCTmax.sd/2)
+      z_i = rnorm(1,z.mean,z.sd/2)
+      
+      for (j in 1:length(temp.list_k)){
+        temp_j=temp.list_k[j]
+        #here we incorporate individual environmental (plastic) variation into our TDT parameters
+          sCTmax_ij = rnorm(n_k,mean=sCTmax_i,sCTmax.sd/2)
+          z_ij = rnorm(n_k,z_i,z.sd)
+        TDT.df_ij = data.frame(
+          #here we simulate the TDT data for a given line at a given temp. Note that individual variation in TDT parameters is incorporated here, as well as a general error term
+          log10_tf = rnorm(rep(1,n_k),(sCTmax_ij-temp_j)/z_ij,rep(sd.mean,n_k)),
+                               temp=rep(temp_j,n_k),line=rep(i,n_k))
+        TDT.df_k = rbind(TDT.df_k,TDT.df_ij)
+    }
+    }
+  #analyze for this N_T
+  
+  #run an lm to estimate the original pars
+  lines.df_k = data.frame(line=c(), slope = c(), intercept = c())
+  #fit least squares regression for each line
+  for (j in 1:N){
+    data_j = TDT.df_k[TDT.df_k$line==j,]
+    lm_j = lm(log10_tf~temp,data=data_j)
+    lines.df_k = rbind(lines.df_k, data.frame(line=j,slope=coefficients(lm_j)[2],intercept=coefficients(lm_j)[1]))
+  }
+  #reparameterize
+  lines.df_k$sCTmax = -lines.df_k$intercept/lines.df_k$slope
+  lines.df_k$z = -1/lines.df_k$slope
+  #KL divergence
+  mu_hat = colMeans(lines.df_k[,c("sCTmax","z")])
+  sigma_hat = cov(lines.df_k[,c("sCTmax","z")])
+variable.N_T.df_s$kl[k] = kl_mvn(mu_hat,sigma_hat,mu,sigma)
+}
+  variable.N_T.df = rbind(variable.N_T.df,variable.N_T.df_s)
+  }
+
+```
+
+```{r}
+#panel 2:
+
+gammod = gam(log(kl) ~ s(N_T, k = 3), data = variable.N_T.df)
+pvalue = summary(gammod)$s.table[1, "p-value"]
+
+
+
+p2=ggplot(variable.N_T.df) +
+  geom_boxplot(
+    aes(x = N_T, y = log(kl), group = N_T),
+    width = 0.8) +
+  scale_x_continuous(breaks = sort(unique(variable.N_T.df$N_T))) +
+  theme_classic()+
+geom_smooth(aes(x = N_T, y = log(kl),group=1),method = "gam",
+    formula = y ~ s(x, k =3),se=FALSE)+
+  ylab("ln(KL)")+
+  xlab(expression(n[temps]))+
+  annotate("text", x = 7, y = 10,
+           label = paste0("p = ", round(pvalue, 2)),
+           hjust = 1.1, vjust = 1.5, size=5)
+
+
+
+#Apparently, it is best to put all of your eggs in *two* baskets: estimations are more accurate when we sample more points from fewer, farther apart temperatures. Intuitively this makes sense because it gives each point maximum leverage. Additionally, having more samples at your temperatures of interest helps you more accurately depict the shape of the distribution, if that is something you're interested in. 
+```
+
+```{r}
+#panel 3
+#Here we want to test temperature spacing. If we use more than two temperatures, should they be clustered at high or low temps?
+#We will use 3 temps: 2 fixed 8C apart, and the third will vary between the two
+delta.T=12
+Tmin=temp_midpoint-delta.T/2
+Tmax=temp_midpoint+delta.T/2
+temp3.list = seq(Tmin,Tmax,0.01)
+
+variable.temp3.df = data.frame(kl=rep(NA,length(temp3.list)),temp3=temp3.list)
+
+for (k in 1: length(temp3.list)){
+  temp3_k = temp3.list[k]
+  temp.list_k = c(Tmin,temp3_k,Tmax)
+  
+  TDT.df_k = data.frame(log10_tf=c(), temp=c(), line=c(),z=c(),sCTmax=c())
+  
+    for (i in 1:N){
+      #line (genetic) variation
+      sCTmax_i = rnorm(1,sCTmax.mean,sCTmax.sd/2)
+      z_i = rnorm(1,z.mean,z.sd/2)
+      
+      for (j in 1:length(temp.list_k)){
+        temp_j=temp.list_k[j]
+        #here we incorporate individual environmental (plastic) variation into our TDT parameters
+          sCTmax_ij = rnorm(n_k,mean=sCTmax_i,sCTmax.sd/2)
+          z_ij = rnorm(n_k,z_i,z.sd)
+        TDT.df_ij = data.frame(
+          #here we simulate the TDT data for a given line at a given temp. Note that individual variation in TDT parameters is incorporated here, as well as a general error term
+          log10_tf = rnorm(rep(1,n_k),(sCTmax_ij-temp_j)/z_ij,rep(sd.mean,n_k)),
+                               temp=rep(temp_j,n_k),line=rep(i,n_k))
+        TDT.df_k = rbind(TDT.df_k,TDT.df_ij)
+    }}
+  
+  #analyze for this temp3
+  
+  #run an lm to estimate the original pars
+  lines.df_k = data.frame(line=c(), slope = c(), intercept = c())
+  #fit least squares regression for each line
+  for (j in 1:N){
+    data_j = TDT.df_k[TDT.df_k$line==j,]
+    lm_j = lm(log10_tf~temp,data=data_j)
+    lines.df_k = rbind(lines.df_k, data.frame(line=j,slope=coefficients(lm_j)[2],intercept=coefficients(lm_j)[1]))
+  }
+  #reparameterize
+  lines.df_k$sCTmax = -lines.df_k$intercept/lines.df_k$slope
+  lines.df_k$z = -1/lines.df_k$slope
+  #KL divergence
+  mu_hat = colMeans(lines.df_k[,c("sCTmax","z")])
+  sigma_hat = cov(lines.df_k[,c("sCTmax","z")])
+variable.temp3.df$kl[k] = kl_mvn(mu_hat,sigma_hat,mu,sigma)
+  
+}
+
+```
+
+
+```{r}
+#panel 3
+#Here we test whether the vertex of this parabola is significantly different from the midpoint of these two temperatures. This would indicate that one side is preferred over the other.
+# fit raw quadratic
+# Fit raw quadratic 
+fit <- lm(log(kl) ~ temp3 + I(temp3^2), data = variable.temp3.df)
+beta <- coef(fit)
+beta1 <- beta["temp3"]
+beta2 <- beta["I(temp3^2)"]
+
+# Vertex and SE via delta method
+vcov_mat <- vcov(fit)
+dx_db1 <- -1 / (2*beta2)
+dx_db2 <- beta1 / (2*beta2^2)
+var_vertex <- dx_db1^2 * vcov_mat["temp3", "temp3"] +
+              dx_db2^2 * vcov_mat["I(temp3^2)", "I(temp3^2)"] +
+              2*dx_db1*dx_db2*vcov_mat["temp3", "I(temp3^2)"]
+se_vertex <- sqrt(var_vertex)
+x_vertex <- -beta1/(2*beta2)
+ci_lower <- x_vertex - 1.96*se_vertex
+ci_upper <- x_vertex + 1.96*se_vertex
+
+# Prepare fitted line
+x_vals <- seq(min(variable.temp3.df$temp3), max(variable.temp3.df$temp3), length.out = 100)
+y_vals <- beta[1] + beta1 * x_vals + beta2 * x_vals^2
+fit_df <- data.frame(x = x_vals, y = y_vals)
+
+z_value <- (x_vertex - temp_midpoint) / se_vertex
+p_value <- 2 * pnorm(-abs(z_value))
+p_value
+
+# Plot
+p3=ggplot(variable.temp3.df, aes(x = temp3, y = log(kl))) +
+  geom_point(alpha = 0.3) +
+  geom_line(data = fit_df, aes(x = x, y = y), color = "blue", linewidth = 1) +
+  geom_vline(xintercept = x_vertex, color = "purple", linetype = "dashed") +
+  geom_rect(aes(xmin = ci_lower, xmax = ci_upper, ymin = -Inf, ymax = Inf),
+            fill = "purple", alpha = 0.005) +
+  labs(
+    x = expression("Temperature (" * degree * "C)"),
+    y = "ln(KL)") +
+  theme_classic()+
+  annotate("text", x = 35, y = 7.5, 
+           label = paste("italic(p) == ", round(p_value,2)), 
+           parse = TRUE, size = 5)
+middle.temp.mod = lm(log(kl)~sCTmax.diff,data=variable.middle.temp.df)
+#not significantly different: It doesn't really matter which side the extra temperature is on
+```
+
+```{r}
+#panel 4
+#Here we are testing whether shifting all of the temperatures left or right matters
+delta.T=6 #using a smaller delta T so we have more room to work with
+N_T=3
+middle.temp.p4 = seq(30,40,0.01)
+
+variable.middle.temp.df = data.frame(kl=rep(NA,length(middle.temp.p4)),middle.temp=middle.temp.p4)
+
+for (k in 1:length(middle.temp.p4)){
+  middle.temp.p4_k = middle.temp.p4[k]
+  temps.list_k = c(middle.temp.p4_k-delta.T/2,middle.temp.p4_k,middle.temp.p4_k+delta.T/2)
+  TDT.df_k = data.frame(log10_tf=c(), temp=c(), line=c(),z=c(),sCTmax=c())
+  
+  for (i in 1:N){
+      #line (genetic) variation
+      sCTmax_i = rnorm(1,sCTmax.mean,sCTmax.sd/2)
+      z_i = rnorm(1,z.mean,z.sd/2)
+      
+      for (j in 1:length(temp.list_k)){
+        temp_j=temp.list_k[j]
+        #here we incorporate individual environmental (plastic) variation into our TDT parameters
+          sCTmax_ij = rnorm(n_k,mean=sCTmax_i,sCTmax.sd/2)
+          z_ij = rnorm(n_k,z_i,z.sd)
+        TDT.df_ij = data.frame(
+          #here we simulate the TDT data for a given line at a given temp. Note that individual variation in TDT parameters is incorporated here, as well as a general error term
+          log10_tf = rnorm(rep(1,n_k),(sCTmax_ij-temp_j)/z_ij,rep(sd.mean,n_k)),
+                               temp=rep(temp_j,n_k),line=rep(i,n_k))
+        TDT.df_k = rbind(TDT.df_k,TDT.df_ij)
+    }}
+  
+  #analyze for this middle.temp
+  
+  #run an lm to estimate the original pars
+  lines.df_k = data.frame(line=c(), slope = c(), intercept = c())
+  #fit least squares regression for each line
+  for (j in 1:N){
+    data_j = TDT.df_k[TDT.df_k$line==j,]
+    lm_j = lm(log10_tf~temp,data=data_j)
+    lines.df_k = rbind(lines.df_k, data.frame(line=j,slope=coefficients(lm_j)[2],intercept=coefficients(lm_j)[1]))
+  }
+  #reparameterize
+  lines.df_k$sCTmax = -lines.df_k$intercept/lines.df_k$slope
+  lines.df_k$z = -1/lines.df_k$slope
+  #KL divergence
+  mu_hat = colMeans(lines.df_k[,c("sCTmax","z")])
+  sigma_hat = cov(lines.df_k[,c("sCTmax","z")])
+variable.middle.temp.df$kl[k] = kl_mvn(mu_hat,sigma_hat,mu,sigma)
+  
+  
+}
+```
+
+```{r}
+#panel 4:
+p_value=summary(middle.temp.mod)$coefficients[2,4]
+p_value
+variable.middle.temp.df$max.temp = variable.middle.temp.df$middle.temp+delta.T/2
+variable.middle.temp.df$sCTmax.diff = sCTmax.mean-variable.middle.temp.df$max.temp
+p4=ggplot(data=variable.middle.temp.df)+
+  geom_point(aes(y=log(kl),x=sCTmax.diff))+
+  geom_smooth(aes(y=log(kl),x=sCTmax.diff),method="lm",se=FALSE)+
+  theme_classic()+
+xlab(expression("Left temperature shift (" * degree * "C)"))+
+  annotate("text", x = 10, y = 7.5, 
+           label = paste("italic(p) == ", round(p_value,2)), 
+           parse = TRUE, size = 5)+
+  ylab("ln(KL)")
+middle.temp.mod = lm(log(kl)~sCTmax.diff,data=variable.middle.temp.df)
+
+#no difference. You don't need to avoid high/low temps. Although, this is something that might require consideration of practical constraints, and nonconformities to our simulation structure, as outliers will become larger as you near t=0 (skew may increase, model effectiveness decrease)
+```
+
+```{r}
+#Full figure
+wrap_plots(p1,p2,p3,p4,nrow=2)+
+    plot_annotation(tag_levels = "A")&
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text  = element_text(size = 10),  # Keeps tick text above 6pt minimum
+    plot.margin = margin(5, 5, 5, 5, "mm"))
+
+```
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Figure S6
+Let's check the studies that Gunderson found to be artificial
+```{r}
+rm(list = ls())
+source("identifiability_functions.R")
+library(patchwork)
+library(tidyverse)
+#check which ones have more than one species
+file <- "compiled_reanalysis_data_V2.xlsx"
+
+read_sheet_clean <- function(sheet) {
+  df <- readxl::read_excel(file, sheet = sheet)
+  names(df) <- make.names(names(df))
+  df
+}
+
+datasets_init <- list(
+  vanHeerwaarden = read_sheet_clean("van Heerwaarden 2016"),
+  Deery = read_sheet_clean("Deery 2021"),
+  Phillips = read_sheet_clean("Phillips 2016"),
+  Gilbert = read_sheet_clean("Gilbert 2019"),
+  Sasaki19 = read_sheet_clean("Sasaki 2019"),
+  Sasaki20 = read_sheet_clean("Sasaki 2020"),
+  #only SP pop control, PG pop, control
+  Sasaki21 = read_sheet_clean("Sasaki 2021"),
+  Noh = read_sheet_clean("Noh 2017"),
+  Oneillcco = read_sheet_clean("Oneil 2021 cco"),
+  Oneillccrt = read_sheet_clean("Oniel 2021 ccrt"),
+  Nguyen = read_sheet_clean("Nguyen 2019"),
+  Mottola = read_sheet_clean("Mottola 2022"),
+  Morgan = read_sheet_clean("Morgan 2018")
+)
+
+datasets = list( 
+  Mottola = datasets_init$Mottola,
+                  Morgan.M = datasets_init$Morgan[datasets_init$Morgan$sex=="male",],
+                  Morgan.F = datasets_init$Morgan[datasets_init$Morgan$sex=="female",],
+                  Phillips_O1 = datasets_init$Phillips[datasets_init$Phillips$observer==1,],
+  Phillips_O2 = datasets_init$Phillips[datasets_init$Phillips$observer==2,],
+  Gilbert = datasets_init$Gilbert,
+                  vanHeerwaarden = datasets_init$vanHeerwaarden,
+                  SasakiCT_control = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="CT" & datasets_init$Sasaki21$treat=="control"),],
+                  SasakiCT_warming = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="CT" & datasets_init$Sasaki21$treat=="warming"),],
+                  SasakiSP_control = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="SP" & datasets_init$Sasaki21$treat=="control"),],
+                  SasakiSP_warming = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="SP" & datasets_init$Sasaki21$treat=="warming"),],
+                  SasakiPG_control = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="CT" & datasets_init$Sasaki21$treat=="control"),],
+                  SasakiPG_warming = datasets_init$Sasaki21[(datasets_init$Sasaki21$pop=="PG" & datasets_init$Sasaki21$treat=="warming"),],
+                  Deery_caroline = datasets_init$Deery[datasets_init$Deery$species=="carolinensis",],
+                  Deery_sagrei = datasets_init$Deery[datasets_init$Deery$species=="sagrei",],
+                  Sasaki19 = datasets_init$Sasaki19,
+                  Sasaki20 = datasets_init$Sasaki20,
+                  Noh_low = datasets_init$Noh[datasets_init$Noh$treatment=="low",],
+                  Noh_mid = datasets_init$Noh[datasets_init$Noh$treatment=="mid",],
+                  Noh_high = datasets_init$Noh[datasets_init$Noh$treatment=="high",],
+                  Oneillcco15 = datasets_init$Oneillcco[datasets_init$Oneillcco$treatment=="15C",],
+                  Oneillcco25 = datasets_init$Oneillcco[datasets_init$Oneillcco$treatment=="25C",],
+                  Oneillccrt15 = datasets_init$Oneillccrt[datasets_init$Oneillccrt$treatment=="15C",],
+                  Oneillccrt25 = datasets_init$Oneillccrt[datasets_init$Oneillccrt$treatment=="25C",],
+                  Nguyen = datasets_init$Nguyen
+                  )
+#remove unaltered columns from Nguyen so they aren't picked up by the cleaner function
+datasets$Nguyen=datasets$Nguyen[,(colnames(datasets$Nguyen)%in%c("baseline.ccrt.", "acclimated.ccrt.")==FALSE)]
+
+prep_data <- function(df, name) {
+
+  possible_pairs <- list(
+    c("ctmax1", "ctmax2"),
+    c("t18", "t22"),
+    c("ct1", "ct2"),
+    c("baseline.ccrt.", "acclimated.ccrt."),
+    c("cor.cco1","cor.cco2"),
+    c("ccrt1","ccrt2"),
+    c("cor.acclimated","cor.baseline"),
+    c("CTmax1","CTmax2"),
+    c("w1","w2"),
+    c("basal", "hard")
+  )
+
+  matching_pairs <- Filter(
+    function(pair) all(pair %in% names(df)),
+    possible_pairs
+  )
+
+  if (length(matching_pairs) == 0L) {
+    stop("Could not detect paired columns in ", name, ".")
+  }
+
+  if (length(matching_pairs) > 1L) {
+    warning(
+      "More than one measurement pair was found in ",
+      name,
+      ". Using ",
+      paste(matching_pairs[[1L]], collapse = " and "),
+      "."
+    )
+  }
+
+  pair <- matching_pairs[[1L]]
+
+  df |>
+    dplyr::transmute(
+      ID = factor(seq_len(dplyr::n())),
+      y1 = as.numeric(.data[[pair[1L]]]),
+      y2 = as.numeric(.data[[pair[2L]]])
+    ) |>
+    tidyr::pivot_longer(
+      cols = c(y1, y2),
+      names_to = "occasion",
+      values_to = "trait"
+    ) |>
+    dplyr::mutate(
+      stage = ifelse(occasion == "y1", 0, 1)
+    ) |>
+    dplyr::select(ID, stage, trait) |>
+    dplyr::filter(
+      is.finite(stage),
+      is.finite(trait)
+    ) |>
+    dplyr::group_by(ID) |>
+    dplyr::filter(
+      dplyr::n() == 2L,
+      dplyr::n_distinct(stage) == 2L
+    ) |>
+    dplyr::ungroup() |>
+    droplevels()
+}
+
+long_datasets <- purrr::imap(datasets, prep_data)
+
+design_summary <- purrr::imap_dfr(
+  long_datasets,
+  function(df, dataset_name) {
+    tibble(
+      dataset = dataset_name,
+      n_ID = dplyr::n_distinct(df$ID),
+      n_observations = nrow(df),
+      observations_per_ID = nrow(df) / dplyr::n_distinct(df$ID)
+    )
+  }
+)
+```
+
+
+```{r}
+settings <- list(
+  statistic = "correlation",
+  n_sims = 1000,
+  center_predictor = TRUE,
+  test_uncentered_intercept = TRUE,
+  seed = 1,
+  min_group_n = 2,
+  alternative = "two.sided"
+)
+
+results <- imap(long_datasets, \(d, nm) {
+
+  do.call(
+    reaction_norm_null_test,
+    c(
+      list(
+        data = d,
+        response = "trait",
+        predictor = "stage",
+        group = "ID"
+      ),
+      settings
+    )
+  )
+})
+
+ncol <- 5
+
+plots <- imap(
+  results,
+  function(res, nm) {
+
+    i <- which(names(results) == nm)
+
+    left_col  <- ((i - 1) %% ncol) == 0
+    bottom_row <- i > (length(results) - ncol)
+
+    p <- plot(res) +
+      ggtitle(nm) +
+      coord_cartesian(
+        xlim = c(-1, 1),
+        ylim = c(0, 200)
+      ) +
+      annotate(
+        "text",
+        x = Inf,
+        y = Inf,
+        label = paste0(
+          "p = ",
+          round(res$summary$p_value[1], 4)
+        ),
+        hjust = 1.1,
+        vjust = 1.5
+      )
+
+    if (!left_col) {
+      p <- p +
+        theme(
+          axis.title.y = element_blank(),
+          axis.text.y  = element_blank(),
+          axis.ticks.y = element_blank()
+        )
+    }
+
+if (bottom_row) {
+  p <- p +
+    labs(x = "Correlation")   # your desired x-axis title
+} else {
+  p <- p +
+    labs(x = NULL) +
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x  = element_blank(),
+      axis.ticks.x = element_blank()
+    )
+}
+#remove facet strips (axis label)
+    p = p+theme(strip.text = element_blank(),
+strip.background = element_blank())
+    p
+  }
+)
+
+
+
+wrap_plots(plots,ncol=5)+
+  plot_annotation(tag_levels = "A")+
+plot_layout(guides = "collect") &
+theme(legend.position = "bottom")
+```
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Figure S7
+```{r}
+rm(list = ls())
+#Great Tits analysis
+library(lme4)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(MASS)
+
+source("identifiability_functions.R")
+
+dat <- read.csv("Great_Tits.csv")
+
+dat$stage <- dat$NestStage2       # centered predictor 
+dat$y <- dat$TMaleMinDistance    # response
+
+
+full_model <- lmer(
+  y ~ stage + (1 + stage | MaleID),
+  data = dat,
+  REML = TRUE
+)
+
+
+null_model <- lmer(
+  y ~ stage +
+    #independent intercepts and slopes
+    (1 | MaleID) +
+    (1 | BroodID) +
+    (0 + stage | MaleID),
+  data = dat,
+  REML = TRUE
+)
+
+result <- identifiability_test_mixed(
+  full_model = full_model,
+  null_model = null_model,
+  data = dat,
+  n_sim = 1000,
+  statistic = "correlation",
+  focal_group = "MaleID",
+  slope_term = "stage",
+  labels = c("Breeding stage (centered)", "Aggressivness"),
+  seed = 1,
+  exclude_singular = FALSE
+)
+
+result$p_value
+result$confint
+result$observed_statistic
+row1 = result$figure
+```
+
+
+
+
+```{r}
+#code + data from: Jolles, Jolle; Briggs, Helen; Araya-Ajoy, Yimen; Boogert, Neeltje (2019), “Data for: Personality, plasticity and predictability in sticklebacks: bold fish are less plastic and more predictable than shy fish”, Mendeley Data, V2, doi: 10.17632/d9xz2k5pyk.2
+library(lme4)
+library(ggplot2)
+
+dat <- read.csv("Sticklebacks/boldnessdat.csv")
+head(dat)
+dbef <- dat[!dat$testwk %in% c(10),]
+dbef.list =
+  list(Y          = dbef$prop.out,
+       BATCH      = dbef$batch - 1,
+       ID         = dbef$id,
+       WEEK       = as.numeric(dbef$testwk),
+       TRIAL      = as.numeric(dbef$trial) - 3,
+       N          = length(dbef$prop.out),
+       N_id       = length(unique(dbef$id)))
+dbef.list$Y.z       <- (dbef.list$Y - mean(dbef.list$Y)) / sd(dbef.list$Y)
+dbef.df = as.data.frame(dbef.list)
+dbef.df$WEEK.c = dbef.df$WEEK-mean(dbef.df$WEEK)
+full_model <- lmer(Y.z ~ WEEK + (WEEK | ID), dbef.df, 
+                            control = lmerControl(optimizer = "bobyqa"))
+
+null_model <- lmer(
+  Y.z ~ WEEK +
+    #independent intercepts and slopes
+    (1 | ID) +
+    (0 + WEEK | ID),
+  data = dbef.df,
+  REML = TRUE
+)
+
+result <- identifiability_test_mixed(
+  full_model = full_model,
+  null_model = null_model,
+  data = dbef.df,
+  n_sim = 1000,
+  statistic = "correlation",
+  focal_group = "ID",
+  slope_term = "WEEK",
+  labels = c("Week","Standardized boldness"),
+  seed = 1,
+  exclude_singular = FALSE,
+  tags = c("D", "E", "F")
+)
+
+
+
+result$p_value
+row2 = result$figure
+result$observed_statistic
+result$confint
+```
+
+```{r}
+#centered
+full_model <- lmer(Y.z ~ WEEK.c + (WEEK.c | ID), dbef.df, 
+                            control = lmerControl(optimizer = "bobyqa"))
+
+null_model <- lmer(
+  Y.z ~ WEEK.c +
+    #independent intercepts and slopes
+    (1 | ID) +
+    (0 + WEEK.c | ID),
+  data = dbef.df,
+  REML = TRUE
+)
+result2 <- identifiability_test_mixed(
+  full_model = full_model,
+  null_model = null_model,
+  data = dbef.df,
+  n_sim = 1000,
+  statistic = "correlation",
+  focal_group = "ID",
+  slope_term = "WEEK.c",
+  labels = c("Week (centered)","Standardized boldness"),
+  seed = 1,
+  exclude_singular = FALSE,
+  tags = c("D", "E", "F")
+)
+```
+
+
+```{r}
+#Mussel sperm
+#analysis is reconstructed from author stated methods
+data3 = read.csv("Mussel_Sperm/Hadlow_et_al_2023_Female_reproductive_fluids.csv")
+head(data3)
+
+
+# Construct identifiers and predictors
+library(FactoMineR)
+library(dplyr)
+library(stringr)
+library(lme4)
+
+dat <- data3 %>%
+  mutate(
+    male_id = factor(
+      str_remove(animal_id, "\\.[1-4]\\.[ES]$")
+    ),
+    treatment = factor(
+      str_extract(animal_id, "[ES]$"),
+      levels = c("S", "E"),
+      labels = c("Seawater", "Egg water")
+    ),
+    block_id = factor(egg_pool),
+
+    # Already measured as minutes since spawning
+    ejaculate_age = motility_time
+  )
+
+#calculate PC1
+
+pca_vars <- c(
+  "motile_mean_alh",
+  "motile_mean_bcf",
+  "motile_mean_lin",
+  "motile_mean_str",
+  "motile_mean_vap",
+  "motile_mean_vcl",
+  "motile_mean_vsl",
+  "motile_mean_wob"
+)
+
+pca_result <- PCA(
+  dat[, pca_vars],
+  scale.unit = TRUE,
+  ncp = 8,
+  graph = FALSE
+)
+
+dat$PC1 <- pca_result$ind$coord[, 1]
+#percentage variance explained agrees with the paper. Exact loadings are different, isnce PCA scale is arbitrary
+pca_result$eig
+
+#standardize ejaculate age
+dat$age_z <- as.numeric(scale(dat$motility_time))
+#filter to just seawater
+sea_dat = subset(dat, treatment == "Seawater")
+sea_dat <- subset(dat, treatment == "Seawater")
+
+full_model <- lmer(
+  PC1 ~ age_z +
+    (1 + age_z | male_id) +
+    (1 | block_id),
+  data = sea_dat,
+  REML = TRUE
+)
+
+null_model <- lmer(
+  PC1 ~ age_z +
+    #independent intercepts and slopes
+    (1 | male_id) +
+    (1 | block_id) +
+    (0 + age_z | male_id),
+  data = sea_dat,
+  REML = TRUE
+)
+
+#run the test
+result <- identifiability_test_mixed(
+  full_model = full_model,
+  null_model = null_model,
+  data = sea_dat,
+  n_sim = 1000,
+  statistic = "correlation",
+  focal_group = "male_id",
+  slope_term = "age_z",
+  labels = c("Standardized age","PC1 (motility)"),
+  seed = 2,
+  exclude_singular = FALSE,
+  tags = c("G", "H", "I")
+)
+result$observed_statistic
+result$p_value
+result$confint
+row3 = result$figure
+```
+
+```{r}
+final_plot=row1/row2/row3
+final_plot
+```
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Power analysis (Figure S4)
+```{r}
+rm(list=ls())
+source("identifiability_functions.R")
+tradeoff_power_analysis(
+GROUP_SAMPLE_SIZES = c(10,20,50,100,200,1000),
+GENERATING_CORRELATIONS = c(-0.8, -0.5, -0.3, 0, 0.3, 0.5, 0.8),
+# Means of the true intercept and slope distributions.
+MEAN_INTERCEPT = 1.6,
+MEAN_SLOPE     = -0.21,
+#for the Soto data example, these are a conservative estimates, since it includes sampling/estimation variability
+INTERCEPT_VARIANCE = 0.006,
+SLOPE_VARIANCE     = 0.0018,
+#Impossible to know what this truly is, but we can have an idea for order of magnitude
+RESIDUAL_VARIANCE = 0.5,
+#Centered soto data for example
+PREDICTOR_VALUES = c(-1.5,-0.5,0.5,1.5),
+REPLICATES_PER_PREDICTOR = 10,
+N_OUTER_SIMULATIONS = 200,
+N_INNER_NULL_SIMULATIONS = 200,
+TEST_STATISTIC = "correlation",
+SIGNIFICANCE_LEVEL = 0.05,
+TEST_ALTERNATIVE = "two.sided",
+CENTER_PREDICTOR = FALSE,
+PREDICTOR_CENTER = NULL,
+TEST_UNCENTERED_INTERCEPT = FALSE,
+MASTER_SEED = 1,
+RESULTS_FILE = "reaction_norm_power_results.rds",
+SUMMARY_FILE = "reaction_norm_power_summary.csv",
+FIGURE_FILE  = "reaction_norm_power_panel_A.png",
+RESUME_EXISTING_RUN = FALSE,
+VERBOSE = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
