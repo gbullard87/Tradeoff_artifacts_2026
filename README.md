@@ -2,6 +2,7 @@
 This repository contains code and data associated with the manuscript "Separating biological signal from statistical artifact in trait trade-off inference" by Garrison W. Bullard and Donald A. Jackson.
 
 ##Associated manuscript/preprint
+
 https://doi.org/10.64898/2026.10.03.756330
 
 ##Overview
